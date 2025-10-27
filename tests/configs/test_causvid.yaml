@@ -1,0 +1,15 @@
+# Test-only configuration for CausVid
+# Simplified for unit testing
+model_name: wan
+generator_name: causal_wan
+batch_size: 1
+num_frames: 5  # Small for testing
+image_or_video_shape:
+- 1
+- 5  # Reduced frames for testing
+- 16
+- 60
+- 104
+mixed_precision: true
+seed: 0
+# Minimal configuration for testing purposes

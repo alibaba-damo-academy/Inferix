@@ -1,0 +1,15 @@
+**/__pycache__
+.idea
+*.patch
+/ckpt/
+
+ckpt/self_forcing
+log*
+
+# macOS
+.DS_Store
+.DS_Store?
+
+/tmp/
+.venv/
+.qoder/

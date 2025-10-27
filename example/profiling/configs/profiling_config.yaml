@@ -1,0 +1,39 @@
+# Profiling configuration for Self Forcing model
+# This configuration enables comprehensive profiling including diffusion model analysis
+profiling:
+  enabled: true
+  real_time_display: true
+  display_interval: 3.0
+  
+  # GPU monitoring
+  gpu_monitor_interval: 0.5
+  monitor_gpu_memory: true
+  monitor_gpu_utilization: true
+  monitor_gpu_temperature: true
+  monitor_gpu_power: true
+  
+  # CPU monitoring
+  cpu_monitor_interval: 1.0
+  monitor_cpu_usage: true
+  monitor_system_memory: true
+  
+  # Reporting
+  generate_final_report: true
+  report_format: "both"
+  output_dir: "./example/self_forcing/profiling_reports"
+  
+  # Advanced options
+  max_data_points: 10000
+  profile_inference_steps: true
+  profile_vae_decode: true
+  profile_text_encoding: true
+  profile_diffusion_steps: true
+  profile_block_computation: true
+  profile_model_parameters: true
+  
+  # Session metadata
+  session_tags:
+    model: "self_forcing"
+    experiment: "performance_analysis"
+    profiling_version: "comprehensive_v1.0"
+    analysis_depth: "detailed"

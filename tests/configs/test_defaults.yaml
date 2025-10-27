@@ -1,0 +1,10 @@
+# Test-only default configuration
+# Minimal configuration for unit testing
+independent_first_frame: false
+warp_denoising_step: false
+causal: true
+num_training_frames: 5  # Small for testing
+height: 64  # Small for testing
+width: 64   # Small for testing 
+num_frames: 5  # Small for testing
+num_samples: 1
