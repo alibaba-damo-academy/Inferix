@@ -1,6 +1,7 @@
 # Inferix
 
-[![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | [![Preprint](https://img.shields.io/badge/Preprint-arXiv-red)](preprint)
+[![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | [![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](inferix) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/)
+
 
 ## 📢 News
 
