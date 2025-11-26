@@ -28,6 +28,7 @@ Therefore, **Inferix** is specifically designed as a next-generation inference e
 - 📊 **Next-Gen Architecture**: Built for immersive world synthesis at scale
 - 📈 **Built-in Profiling**: Performance monitoring and analysis capabilities with enhanced diffusion model profiling
 - 🔄 **Continuous Prompt Support**: Enable dynamic narrative control with different prompts for different video segments (see [CausVid example](example/causvid/))
+- 🚀 **Quantized Inference**: 8-bit(INT8 / FP8) quantization(Per-tensor / Per-token-per-channel) with [DAX](https://github.com/RiseAI-Sys/DAX) support
 
 <p align="center">
     <img src="assets/figure_2.png" alt="Framework Architecture" width="80%"/>
@@ -37,7 +38,6 @@ Therefore, **Inferix** is specifically designed as a next-generation inference e
 
 ### Framework Enhancements
 - [ ] Complex KV Management
-- [ ] Support Quantization with DAX
 - [ ] Support finetuning a pretrained video gen model (Diffusion to Semi-AR) & distill models into few steps.
 - [ ] Support high-concurrency deployment
 - [ ] Support more complex distributed inference
