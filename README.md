@@ -2,7 +2,7 @@
 <!--
 [![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | 
 -->
-[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/)
+[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Follow us on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/follow-us-on-hf-md.svg)](https://huggingface.co/papers/2511.20714) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/)
 
 
 ## 📢 News
