@@ -1,6 +1,8 @@
 # Inferix
-
-[![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | [![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/)
+<!--
+[![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | 
+-->
+[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/)
 
 
 ## 📢 News
@@ -138,12 +140,12 @@ For questions and support, please reach out through:
 If you use Inferix in your research, please cite:
 
 ```bibtex
-@software{inferix2025,
-  title={Inferix: Next-Generation Inference Engine for Immersive World Synthesis},
-  author={[The Inferix Team]},
-  url={https://github.com/inferix/inferix}
-  month={[September]},
-  year={2025}
+@article{inferix2025,
+  title={Inferix: A Block-Diffusion Based Next-Generation Inference Engine for World Simulation},
+  author={Feng, Tianyu and Han, Yizeng and He, Jiahao and He, Yuanyu and Lin, Xi and Liu, Teng and Lu, Hanfeng and Tang, Jiasheng and Wang, Wei and Wang, Zhiyuan and Wu, Jichao and Yang, Mingyang and Yu, Yinghao and Zhang, Zeyu and Zhuang, Bohan},
+  journal={arXiv preprint arXiv:2511.20714},
+  year={2025},
+  url={https://arxiv.org/abs/2511.20714}
 }
 ```
 
@@ -159,16 +161,18 @@ We thank the following projects for their contributions:
 We are a joint team from ZJU & HKUST & Alibaba DAMO Academy & Alibaba TRE.
 
 ### Current Members:
-- Bohan Zhuang  
-- Hanfeng Lu
+- Tianyu Feng
+- Yizeng Han
 - Jiahao He
+- Yuanyu He
+- Xi Lin
+- Teng Liu
+- Hanfeng Lu
 - Jiasheng Tang
+- Wei Wang
+- Zhiyuan Wang
 - Jichao Wu
 - Mingyang Yang
-- Tianyu Feng 
-- Teng Liu  
-- Wei Wang
-- Yinghao Yu 
-- Yizeng Han 
-- Yuanyu He
+- Yinghao Yu
 - Zeyu Zhang
+- Bohan Zhuang
