@@ -5,6 +5,7 @@
 
 ## 📢 News
 
+- **[2025.11]** [Technical report](https://arxiv.org/abs/2511.20714) is available!
 - **[2025.10]** Inferix is released!
 
 ## 🚀 About
