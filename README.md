@@ -2,12 +2,12 @@
 <!--
 [![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | 
 -->
-[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Follow us on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/follow-us-on-hf-md.svg)](https://huggingface.co/papers/2511.20714) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/)
+[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Data](https://img.shields.io/badge/LVBench-Data-blue)](https://huggingface.co/datasets/heyuanyu/LV-Bench) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://ziplab.co/BlockVid/assets/BlockVid_DAMO.pdf) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/) [![Follow us on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/follow-us-on-hf-md.svg)](https://huggingface.co/papers/2511.20714)
 
 
 ## 📢 News
 
-- **[2025.11]** [Technical report](https://arxiv.org/abs/2511.20714) is available!
+- **[2025.11]** [Technical report](https://arxiv.org/abs/2511.20714) and [LV-Bench](https://huggingface.co/datasets/heyuanyu/LV-Bench) are available!
 - **[2025.10]** Inferix is released!
 
 ## 🚀 About
@@ -119,9 +119,9 @@ Add your model to the main README and create detailed documentation in your mode
 ## Benchmarks
 
 ### LVBench
-[![Benchmark](https://img.shields.io/badge/Benchmark-blue)](benchmark)
+[![Benchmark](https://img.shields.io/badge/Benchmark-blue)](https://huggingface.co/datasets/heyuanyu/LV-Bench)
 
-LV-Bench is a curated benchmark of 1,000 minute-long videos targeted at evaluating long-horizon generation. Please refer to [LV-Bench](LV-Bench/README.md) for more details.
+[LV-Bench](https://huggingface.co/datasets/heyuanyu/LV-Bench) is a curated benchmark of 1,000 minute-long videos targeted at evaluating long-horizon generation. Please refer to [LV-Bench](LV-Bench/README.md) for more details.
 
 ## 📝 License
 
