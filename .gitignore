@@ -13,3 +13,5 @@ log*
 /tmp/
 .venv/
 .qoder/
+
+!logger.py
