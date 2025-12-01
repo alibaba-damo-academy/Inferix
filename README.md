@@ -143,12 +143,11 @@ For questions and support, please reach out through:
 If you use Inferix in your research, please cite:
 
 ```bibtex
-@article{inferix2025,
-  title={Inferix: A Block-Diffusion Based Next-Generation Inference Engine for World Simulation},
-  author={Feng, Tianyu and Han, Yizeng and He, Jiahao and He, Yuanyu and Lin, Xi and Liu, Teng and Lu, Hanfeng and Tang, Jiasheng and Wang, Wei and Wang, Zhiyuan and Wu, Jichao and Yang, Mingyang and Yu, Yinghao and Zhang, Zeyu and Zhuang, Bohan},
+@article{team2025inferix,
+  title={Inferix: A Block-Diffusion based Next-Generation Inference Engine for World Simulation},
+  author={Team, Inferix and Feng, Tianyu and Han, Yizeng and He, Jiahao and He, Yuanyu and Lin, Xi and Liu, Teng and Lu, Hanfeng and Tang, Jiasheng and Wang, Wei and others},
   journal={arXiv preprint arXiv:2511.20714},
-  year={2025},
-  url={https://arxiv.org/abs/2511.20714}
+  year={2025}
 }
 ```
 
