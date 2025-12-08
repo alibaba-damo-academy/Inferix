@@ -14,12 +14,13 @@ Inferix supports quantized inference with DAX:
 
 ### 1. Install DAX
 
-First, you need to follow the instructions in [DAX](https://github.com/RiseAI-Sys/DAX) to install it. You can also download by following example:
+Clone DAX to `3rd_party` directory and install:
 
-```
-git clone https://github.com/RiseAI-Sys/DAX.git
-cd DAX
-pip install -e .
+```bash
+# From project root directory
+mkdir -p 3rd_party
+git clone https://github.com/RiseAI-Sys/DAX.git 3rd_party/DAX
+cd 3rd_party/DAX && pip install -e .
 ```
 
 ### 2. Integrate DAX quantization in your pipeline
@@ -59,4 +60,56 @@ quantize_transformer(pipeline.pipeline.generator.model)
 
 ```
 
-We give an example in `run_causvid_quantized.py`, you can learn how to apply DAX quantization from it.  
+## 🚀 Quick Start
+
+### CausVid Quantized Inference
+
+```bash
+# Run with default settings
+./example/quantization/causvid_quantized.sh
+
+# Or customize parameters
+CHECKPOINT_FOLDER=./weights/causvid \
+PROMPT="A beautiful sunset over the ocean" \
+./example/quantization/causvid_quantized.sh
+```
+
+See `run_causvid_quantized.py` for implementation details.
+
+### Self-Forcing Quantized Inference
+
+```bash
+# Run with default settings (FP8 quantization)
+./example/quantization/self_forcing_quantized.sh
+
+# Use INT8 quantization instead
+QUANT_TYPE=int8 ./example/quantization/self_forcing_quantized.sh
+
+# Customize parameters
+CHECKPOINT_PATH=./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+PROMPT="A cat dancing on the moon" \
+NUM_OUTPUT_FRAMES=21 \
+./example/quantization/self_forcing_quantized.sh
+```
+
+**With WebRTC streaming:**
+
+```bash
+python example/quantization/run_self_forcing_quantized.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat dancing" \
+    --output_folder outputs \
+    --quant_type int8 \
+    --enable_webrtc \
+    --use_ema
+```
+
+## 📊 Memory Savings
+
+| Model | FP32/BF16 | FP8 Quantized | Memory Saved |
+|-------|-----------|---------------|-------------|
+| CausVid (1.3B) | ~5.2 GB | ~2.6 GB | ~50% |
+| Self-Forcing (1.3B) | ~5.2 GB | ~2.6 GB | ~50% |
+
+*Note: Actual savings may vary based on batch size and sequence length.*

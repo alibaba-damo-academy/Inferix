@@ -312,7 +312,6 @@ class CausalWanSelfAttention(nn.Module):
                     roped_query,
                     full_k,
                     full_v,
-                    causal=True,
                 )
             else:
                 # For multi-GPU, use CoreAttention with cache parameters

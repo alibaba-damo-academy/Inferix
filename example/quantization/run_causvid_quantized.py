@@ -1,3 +1,7 @@
+"""CausVid Quantized Inference Script
+
+This script runs CausVid model with DAX quantization (FP8) for reduced memory usage.
+"""
 import argparse
 import torch
 import os
@@ -7,16 +11,31 @@ from inferix.pipeline.causvid.pipeline import CausVidPipeline
 from inferix.models.wan_base.utils.parallel_config import ParallelConfig
 from inferix.core.utils import set_random_seed
 from inferix.core.memory.utils import gpu as get_gpu, get_cuda_free_memory_gb
-from dax.quant.quantization.qconfig import get_dynamic_fp8_per_token_act_per_channel_weight_qconfig
-from dax.quant.quantization import quantize_dynamic
+
+# DAX quantization imports
+try:
+    from dax.quant.quantization.qconfig import get_dynamic_fp8_per_token_act_per_channel_weight_qconfig
+    from dax.quant.quantization import quantize_dynamic
+    HAS_DAX = True
+except ImportError:
+    HAS_DAX = False
+    print("Warning: DAX not installed. Quantization will be disabled.")
+    print("To install DAX:")
+    print("  git clone https://github.com/RiseAI-Sys/DAX.git 3rd_party/DAX")
+    print("  cd 3rd_party/DAX && pip install -e .")
+
 
 def quantize_transformer(transformer):
+    if not HAS_DAX:
+        print("Warning: DAX not available, skipping quantization")
+        return
     qconfig_dict = {
         "": get_dynamic_fp8_per_token_act_per_channel_weight_qconfig(),
         "condition_embedder": None,
         "proj_out": None,
     }
     quantize_dynamic(transformer, qconfig_dict)
+    print("✅ Transformer quantized with FP8")
 
 
 def parse_arguments():
