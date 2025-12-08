@@ -90,6 +90,26 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         if checkpoint_path:
             state_dict = torch.load(checkpoint_path, map_location="cpu")
             key = 'generator_ema' if use_ema else 'generator'
+            
+            # Check if the expected key exists in checkpoint
+            if key not in state_dict:
+                available_keys = list(state_dict.keys())
+                print(f"Warning: Key '{key}' not found in checkpoint. Available keys: {available_keys}")
+                
+                # Try fallback keys
+                fallback_key = 'generator_ema' if key == 'generator' else 'generator'
+                if fallback_key in state_dict:
+                    print(f"Using fallback key: '{fallback_key}'")
+                    key = fallback_key
+                else:
+                    # Checkpoint might be the model state_dict directly
+                    print("Attempting to load state_dict directly...")
+                    if hasattr(self.pipeline, 'generator'):
+                        self.pipeline.generator.load_state_dict(state_dict)
+                    else:
+                        self.pipeline.load_state_dict(state_dict)
+                    return
+            
             if hasattr(self.pipeline, 'generator'):
                 self.pipeline.generator.load_state_dict(state_dict[key])
             else:

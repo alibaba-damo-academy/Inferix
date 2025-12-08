@@ -299,16 +299,32 @@ class CausalWanSelfAttention(nn.Module):
                 local_end_index = kv_cache_meta["local_end_index"].item() + current_end - kv_cache_meta["global_end_index"].item()
                 local_start_index = local_end_index - num_new_tokens
             
-            x = self.attention(
-                roped_query,
-                roped_key,
-                v,
-                k_cache=kv_cache_meta["k"],
-                v_cache=kv_cache_meta["v"],
-                k_cache_offset=local_start_index,
-                v_cache_offset=local_start_index,
-
-            )
+            # Update KV cache with new keys/values
+            kv_cache_meta["k"][:, local_start_index:local_end_index] = roped_key
+            kv_cache_meta["v"][:, local_start_index:local_end_index] = v
+            
+            # For single GPU (no parallel_config or world_size == 1), use standard attention with full cache
+            if self.parallel_config is None or self.parallel_config.world_size <= 1:
+                # Use the cached keys/values up to local_end_index
+                full_k = kv_cache_meta["k"][:, :local_end_index]
+                full_v = kv_cache_meta["v"][:, :local_end_index]
+                x = self.attention(
+                    roped_query,
+                    full_k,
+                    full_v,
+                    causal=True,
+                )
+            else:
+                # For multi-GPU, use CoreAttention with cache parameters
+                x = self.attention(
+                    roped_query,
+                    roped_key,
+                    v,
+                    k_cache=kv_cache_meta["k"],
+                    v_cache=kv_cache_meta["v"],
+                    k_cache_offset=local_start_index,
+                    v_cache_offset=local_start_index,
+                )
 
             kv_cache_meta["global_end_index"].fill_(current_end)
             kv_cache_meta["local_end_index"].fill_(local_end_index)

@@ -69,12 +69,27 @@ class CausVidPipeline(AbstractInferencePipeline):
     
     def load_checkpoint(self, checkpoint_path: str, **kwargs) -> None:
         """[Implementation of abstract method] Load model checkpoint weights"""
-        state_dict = torch.load(
-            os.path.join(checkpoint_path, "model.pt"), 
-            map_location="cpu"
-        )['generator']
+        ckpt_file = os.path.join(checkpoint_path, "model.pt")
+        state_dict = torch.load(ckpt_file, map_location="cpu")
         
-        self.pipeline.generator.load_state_dict(state_dict, strict=True)
+        # Try to find the correct key
+        key = 'generator'
+        if key not in state_dict:
+            available_keys = list(state_dict.keys())
+            print(f"Warning: Key '{key}' not found in checkpoint. Available keys: {available_keys}")
+            
+            # Try fallback key
+            fallback_key = 'generator_ema'
+            if fallback_key in state_dict:
+                print(f"Using fallback key: '{fallback_key}'")
+                key = fallback_key
+            else:
+                # Checkpoint might be the model state_dict directly
+                print("Attempting to load state_dict directly...")
+                self.pipeline.generator.load_state_dict(state_dict, strict=True)
+                return
+        
+        self.pipeline.generator.load_state_dict(state_dict[key], strict=True)
     
     def setup_devices(self, low_memory: bool = False):
         """Setup devices and memory management"""

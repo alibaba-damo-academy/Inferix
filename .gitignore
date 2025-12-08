@@ -1,17 +1,93 @@
-**/__pycache__
-.idea
-*.patch
-/ckpt/
+# ============================================
+# Python
+# ============================================
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+inferix.egg-info/
+*.egg
+build/
+dist/
+*.log
+.pytest_cache/
+.ipynb_checkpoints
 
-ckpt/self_forcing
-log*
+# ============================================
+# Environments
+# ============================================
+.env
+.venv
+venv/
+env/
 
-# macOS
+# ============================================
+# IDEs
+# ============================================
+.idea/
+.vscode/
+.qoder/
+*.swp
+*.swo
+
+# ============================================
+# OS
+# ============================================
 .DS_Store
-.DS_Store?
+Thumbs.db
+desktop.ini
 
-/tmp/
-.venv/
+# ============================================
+# Project Specific
+# ============================================
+# Weights & Checkpoints
+weights/
+ckpt/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+!**/configs/*.pt
+
+# Outputs
+outputs/
+output/
+results/
+logs/
+log*/
+
+# Videos (all formats)
+*.mp4
+*.avi
+*.mov
+*.webm
+*.mkv
+*.flv
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.bak
+*.patch
+
+# ============================================
+# ML/AI Tools
+# ============================================
+.cache/
+.huggingface/
+wandb/
+runs/
+profiling_reports/
+
+# ============================================
+# Development
+# ============================================
 .qoder/
 
+# ============================================
+# Keep
+# ============================================
 !logger.py

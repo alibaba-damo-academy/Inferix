@@ -81,7 +81,7 @@ def setup_distributed_environment(args):
             ring_size=ring_size,
         )
     else:
-        device = torch.device("cuda")
+        device = torch.device("cuda:0")
         local_rank = 0
         world_size = 1
         rank = 0
