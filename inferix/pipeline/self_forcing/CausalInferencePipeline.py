@@ -114,6 +114,7 @@ class CausalInferencePipeline(torch.nn.Module):
         return_latents: bool = False,
         profile: bool = False,
         low_memory: bool = False,
+        block_callback: Optional[callable] = None,
     ) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
@@ -126,6 +127,8 @@ class CausalInferencePipeline(torch.nn.Module):
                 If num_input_frames is 1, perform image to video.
                 If num_input_frames is greater than 1, perform video extension.
             return_latents (bool): Whether to return the latents.
+            block_callback (Optional[callable]): Callback function called after each block generation.
+                                                Receives (block_latent, block_index) for progressive streaming.
         Outputs:
             video (torch.Tensor): The generated video tensor of shape
                 (batch_size, num_output_frames, num_channels, height, width).
@@ -365,6 +368,12 @@ class CausalInferencePipeline(torch.nn.Module):
 
                 # Step 3.4: update the start and end frame indices
                 current_start_frame += current_num_frames
+                
+                # Step 3.5: invoke block callback for streaming if provided
+                if block_callback is not None and denoised_pred is not None:
+                    # Extract the current block latent
+                    block_latent = output[:, current_start_frame - current_num_frames:current_start_frame]
+                    block_callback(block_latent, block_index)
 
         # Step 4: Decode the output
         with perf_profiler.stage("vae_decoding"):

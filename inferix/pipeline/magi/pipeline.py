@@ -21,6 +21,8 @@ from inferix.core.utils import set_random_seed
 from inferix.distributed.dist_utils import dist_init, print_rank_0
 from inferix.models.magi.dit import get_dit
 from inferix.pipeline.base_pipeline import AbstractInferencePipeline
+from typing import Optional, Tuple, Callable
+import torch
 
 from .prompt_process import get_txt_embeddings
 from .video_generate import generate_per_chunk
@@ -90,4 +92,23 @@ class MagiPipeline(AbstractInferencePipeline):
         mem_reserved_gb = torch.cuda.max_memory_reserved() / 1024**3
         print_rank_0(
             f"Finish MagiPipeline, max memory allocated: {mem_allocated_gb:.2f} GB, max memory reserved: {mem_reserved_gb:.2f} GB"
+        )
+    
+    def _generate_segment_with_streaming(
+        self,
+        prompt: str,
+        initial_latent: Optional[torch.Tensor],
+        stream_callback: Optional[Callable[[torch.Tensor], None]],
+        segment_length: int = 21,
+        **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        [Implementation of abstract method] Generate segment with streaming for Magi.
+        
+        Note: This is a placeholder implementation. Full streaming support for Magi
+        requires integration with its chunk-based generation architecture.
+        """
+        raise NotImplementedError(
+            "Streaming generation is not yet implemented for MagiPipeline. "
+            "Please use the standard run_text_to_video or run_image_to_video methods."
         )

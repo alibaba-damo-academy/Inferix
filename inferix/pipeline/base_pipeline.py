@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Callable, Tuple
 from contextlib import nullcontext
+import torch
 
 # Profiling imports - profiling is a core module and should always be available
 from ..profiling.profiler import InferixProfiler
@@ -230,8 +231,271 @@ class AbstractInferencePipeline(ABC):
 
     def cleanup_profiling(self):
         """
-        清理profiling资源。
-        子类可以在适当的时候调用此方法来清理profiling资源。
+        Clean up profiling resources.
+        Subclasses can call this method to clean up profiling resources when appropriate.
         """
         if self._profiling_enabled and self._profiler is not None:
             self._profiler.cleanup()
+    
+    def run_streaming_generation(
+        self,
+        prompts: List[str],
+        stream_callback: Optional[Callable[[torch.Tensor], None]] = None,
+        num_segments: int = 1,
+        segment_length: int = 21,
+        overlap_frames: int = 3,
+        **kwargs
+    ) -> Optional[torch.Tensor]:
+        """
+        [Framework-level Method] Streaming video generation with universal interface.
+        
+        TERMINOLOGY:
+        ------------
+        - BLOCK: Model-specific generation unit (e.g., 3 frames per block in Self-Forcing).
+                 Blocks are generated sequentially using KV cache for autoregressive generation.
+                 This is an INTERNAL detail of each model's architecture.
+        
+        - SEGMENT: Framework-level generation unit (e.g., 21 frames = 7 blocks in Self-Forcing).
+                   A segment is a complete generation cycle that can be streamed progressively.
+                   Multiple segments can be chained together for long videos.
+        
+        STREAMING HIERARCHY:
+        -------------------
+        1. BLOCK-LEVEL (Inner Loop - Model Implementation):
+           - Self-Forcing generates 3 frames per block using semi-autoregressive decoding
+           - Each block is decoded and streamed immediately after generation
+           - Callback triggered: block_callback(block_latent, block_index)
+        
+        2. SEGMENT-LEVEL (Outer Loop - Framework Management):
+           - A segment contains multiple blocks (e.g., 21 frames = 7 blocks)
+           - After each segment, memory is cleaned up for long-video generation
+           - Segments can overlap for smooth transitions
+        
+        USAGE MODES:
+        -----------
+        Mode 1: Single-Segment Block-Wise Streaming (Solution 1)
+            Use Case: Short video (e.g., 21 frames) with real-time streaming
+            Example:
+                pipeline.run_streaming_generation(
+                    prompts=['a cat walking'],
+                    stream_callback=webrtc_streamer.stream_batch,
+                    num_segments=1,
+                    segment_length=21  # 7 blocks × 3 frames/block
+                )
+            Flow:
+                Block 0 (frames 0-2)   → decode → stream → continue
+                Block 1 (frames 3-5)   → decode → stream → continue
+                ...
+                Block 6 (frames 18-20) → decode → stream → done
+        
+        Mode 2: Multi-Segment Long-Video Streaming (Solution 4)
+            Use Case: Long video (e.g., 210 frames) with memory management
+            Example:
+                pipeline.run_streaming_generation(
+                    prompts=['a cat walking'],
+                    stream_callback=webrtc_streamer.stream_batch,
+                    num_segments=10,        # 10 segments
+                    segment_length=21,      # 21 frames per segment
+                    overlap_frames=3        # 3 frames overlap between segments
+                )
+            Flow:
+                Segment 0: blocks 0-6   → 21 frames (0-20)   → cleanup → continue
+                Segment 1: blocks 0-6   → 21 frames (18-38)  → cleanup → continue
+                                          ↑ overlap 3 frames
+                ...
+                Segment 9: blocks 0-6   → 21 frames          → cleanup → done
+            Total: 10×21 - 9×3 = 183 unique frames
+        
+        Args:
+            prompts (List[str]): Text prompts for generation.
+            stream_callback (Optional[Callable]): Callback function for streaming decoded frames.
+                                                  Signature: callback(frames: torch.Tensor)
+                                                  - frames: shape [T, H, W, C], dtype uint8, range [0, 255]
+            num_segments (int): Number of segments to generate.
+                               - 1 = short video with block-wise streaming only
+                               - >1 = long video with segment looping and memory cleanup
+            segment_length (int): Number of frames per segment.
+                                 - Must match model's block size requirements
+                                 - Self-Forcing: 21 frames (7 blocks × 3 frames/block)
+            overlap_frames (int): Number of overlapping frames between consecutive segments.
+                                 - Used for smooth transitions in long videos
+                                 - Must be divisible by block size (e.g., 3 for Self-Forcing)
+                                 - Only applies when num_segments > 1
+            **kwargs: Additional model-specific parameters:
+                     - num_samples: batch size
+                     - low_memory: enable memory optimization
+        
+        Returns:
+            Optional[torch.Tensor]: Generated video tensor [B, T, H, W, C].
+                                   Can be None if only streaming is needed (video already sent).
+        
+        Raises:
+            ValueError: If segment_length doesn't match model's block size requirements.
+            NotImplementedError: If the specific pipeline hasn't implemented streaming yet.
+        
+        Note:
+            - Block-wise streaming is implemented by each model's _generate_segment_with_streaming()
+            - Segment-level looping is handled by this framework method
+            - For WebRTC testing, use num_segments=10-20 to generate long streams
+        """
+        print(f"Starting streaming generation: {num_segments} segment(s), {segment_length} frames each")
+        
+        all_videos = []
+        initial_latent = None
+        
+        for segment_idx in range(num_segments):
+            # Use cyclic prompts if there are fewer prompts than segments
+            current_prompt = prompts[segment_idx % len(prompts)]
+            
+            print(f"Generating segment {segment_idx + 1}/{num_segments}...")
+            
+            # Call subclass implementation for single segment generation
+            video_segment, final_latent = self._generate_segment_with_streaming(
+                prompt=current_prompt,
+                initial_latent=initial_latent,
+                stream_callback=stream_callback,
+                segment_length=segment_length,
+                **kwargs
+            )
+            
+            all_videos.append(video_segment)
+            
+            # Extract overlapping frames for next segment
+            if segment_idx < num_segments - 1:
+                initial_latent = final_latent[:, -overlap_frames:]
+            
+            # Clean up memory between segments
+            self._cleanup_segment_memory()
+            
+            print(f"✅ Segment {segment_idx + 1}/{num_segments} completed")
+        
+        print(f"✅ Streaming generation completed: {num_segments} segment(s)")
+        
+        # Return concatenated video if multiple segments
+        return torch.cat(all_videos, dim=1) if len(all_videos) > 1 else all_videos[0] if all_videos else None
+    
+    @abstractmethod
+    def _generate_segment_with_streaming(
+        self,
+        prompt: str,
+        initial_latent: Optional[torch.Tensor],
+        stream_callback: Optional[Callable[[torch.Tensor], None]],
+        segment_length: int = 21,
+        **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        [Abstract Method] Generate a single segment with progressive block-wise streaming.
+        
+        IMPLEMENTATION RESPONSIBILITY:
+        ------------------------------
+        Each model pipeline must implement this method according to its architecture:
+        
+        - Self-Forcing: Semi-autoregressive generation with block-wise decoding
+          * Block size: 3 frames (num_frame_per_block=3)
+          * Segment length: 21 frames = 7 blocks
+          * Implementation: Generate each block → decode → stream → continue
+        
+        - CausVid: Rollout-based generation with chunk streaming
+          * Block size: varies based on configuration
+          * Implementation: Generate each rollout → decode → stream → continue
+        
+        - Magi: Chunk-based generation
+          * Block size: varies based on configuration
+          * Implementation: Generate each chunk → decode → stream → continue
+        
+        BLOCK vs SEGMENT (from model's perspective):
+        --------------------------------------------
+        - BLOCK: Your model's atomic generation unit
+          * Defined by model architecture (e.g., num_frame_per_block)
+          * Generated using KV cache for autoregressive continuation
+          * Example (Self-Forcing): 3 frames per block
+        
+        - SEGMENT: One complete generation cycle requested by the framework
+          * Defined by user/framework (segment_length parameter)
+          * Contains multiple blocks: segment_length / block_size blocks
+          * Example (Self-Forcing): 21 frames = 7 blocks
+        
+        STREAMING WORKFLOW:
+        ------------------
+        1. Initialize generation state (KV cache, etc.)
+        2. For each block in the segment:
+           a. Generate block latent (e.g., 3 frames)
+           b. Decode block to pixel space immediately
+           c. Call stream_callback(decoded_frames) if provided
+           d. Update KV cache for next block
+        3. Return (full_segment_video, final_latent)
+        
+        EXAMPLE IMPLEMENTATION (Self-Forcing):
+        --------------------------------------
+        def _generate_segment_with_streaming(self, prompt, initial_latent, 
+                                            stream_callback, segment_length, **kwargs):
+            # Validate segment_length is multiple of block_size
+            assert segment_length % self.num_frame_per_block == 0
+            
+            # Define block callback for progressive decoding
+            def block_callback(block_latent, block_index):
+                # Decode this block immediately
+                block_video = self.vae.decode(block_latent)
+                # Stream via provided callback
+                if stream_callback:
+                    stream_callback(block_video)
+            
+            # Generate with block callback
+            latents = self.pipeline.inference(
+                ...,
+                block_callback=block_callback  # Hook into block generation
+            )
+            
+            # Return full segment and final latent for continuation
+            return full_video, final_latent
+        
+        Args:
+            prompt (str): Text prompt for current segment generation.
+            initial_latent (Optional[torch.Tensor]): Initial latent state for continuation.
+                                                     - None: start new video (T2V mode)
+                                                     - [B, overlap_frames, C, H, W]: continue from previous segment
+            stream_callback (Optional[Callable]): Callback for streaming decoded blocks.
+                                                 - Called after each block is decoded
+                                                 - Signature: callback(frames: torch.Tensor)
+                                                 - frames: [T, H, W, C], uint8, range [0, 255]
+            segment_length (int): Total number of frames to generate in this segment.
+                                 - Must be compatible with model's block size
+                                 - Will be validated by implementation
+            **kwargs: Model-specific parameters:
+                     - num_samples: batch size for generation
+                     - low_memory: enable memory optimization mode
+                     - guidance_scale: classifier-free guidance scale
+                     - etc.
+        
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: (segment_video, final_latent)
+                - segment_video: Decoded video frames for this segment
+                  * Shape: [B, segment_length, H, W, C]
+                  * dtype: torch.float32
+                  * Range: [0, 1]
+                
+                - final_latent: Final latent state after this segment
+                  * Shape: [B, segment_length, C, H, W] (full latent space)
+                  * Used as initial_latent for next segment
+                  * Framework will extract overlap_frames automatically
+        
+        Raises:
+            ValueError: If segment_length is incompatible with model's block size.
+            NotImplementedError: If streaming is not yet implemented for this model.
+        
+        Note:
+            - This method is called by run_streaming_generation() for each segment
+            - Block-level streaming happens inside this method
+            - Memory cleanup happens between segments (handled by framework)
+        """
+        pass
+    
+    def _cleanup_segment_memory(self):
+        """
+        Clean up memory between segments.
+        
+        Default implementation clears CUDA cache. Subclasses can override
+        for model-specific cleanup (e.g., clearing KV cache).
+        """
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

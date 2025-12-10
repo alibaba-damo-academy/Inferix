@@ -1,8 +1,238 @@
-# Self-Forcing Inference with Video Streaming
+# Streaming Video Generation with Inferix
 
-Self-Forcing video generation model inference example with real-time video streaming support.
+This guide covers both **traditional streaming** (post-generation) and **progressive streaming** (block-wise generation) for real-time video generation.
 
 **GitHub Repository**: [Self-Forcing](https://github.com/guandeh17/Self-Forcing)
+
+## Table of Contents
+
+1. [Quick Start](#quick-start)
+2. [Architecture: Block vs Segment](#architecture-block-vs-segment)
+3. [Progressive Streaming API](#progressive-streaming-api)
+4. [Traditional Streaming](#traditional-streaming)
+5. [Examples](#examples)
+
+---
+
+## Quick Start
+
+### Progressive Streaming (New!)
+
+**Use Case**: Generate long videos with real-time streaming and memory management.
+
+```bash
+export PYTHONPATH=`pwd`:$PYTHONPATH
+python example/streaming/run_progressive_streaming.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat walking in a garden" \
+    --num_segments 10 \
+    --segment_length 21 \
+    --enable_webrtc
+```
+
+**What happens**: Generates 10 segments × 21 frames = 183 frames (with overlap), streaming blocks progressively to WebRTC.
+
+### Traditional Streaming
+
+**Use Case**: Generate short video then stream the complete result.
+
+```bash
+export PYTHONPATH=`pwd`:$PYTHONPATH
+python example/self_forcing/run_self_forcing.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat dancing on the moon" \
+    --enable_webrtc
+```
+
+---
+
+## Architecture: Block vs Segment
+
+### Terminology
+
+#### BLOCK
+**Definition**: Model-specific atomic generation unit.
+
+- **Size**: Self-Forcing = 3 frames (`num_frame_per_block=3`)
+- **Generation**: ~500ms per block (hardware-dependent)
+- **Purpose**: Smallest unit for autoregressive continuation with KV cache
+- **Level**: Internal model implementation detail
+
+#### SEGMENT
+**Definition**: Framework-level complete generation cycle.
+
+- **Size**: 21 frames (default) = 7 blocks × 3 frames/block
+- **Generation**: ~3.5s per segment
+- **Purpose**: Complete generation cycle with memory cleanup
+- **Level**: User-facing API parameter
+
+### Streaming Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  FRAMEWORK LEVEL (run_streaming_generation)                 │
+│                                                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │  Segment 0  │  │  Segment 1  │  │  Segment 2  │  ...    │
+│  │  21 frames  │  │  21 frames  │  │  21 frames  │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         │                │                │                 │
+│    Memory cleanup   Memory cleanup   Memory cleanup         │
+└─────────┼────────────────┼────────────────┼─────────────────┘
+          │                │                │
+          ▼                ▼                ▼
+┌─────────────────────────────────────────────────────────────┐
+│  MODEL LEVEL (_generate_segment_with_streaming)             │
+│                                                              │
+│  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐                │
+│  │ B0│ │ B1│ │ B2│ │ B3│ │ B4│ │ B5│ │ B6│  (7 blocks)    │
+│  │ 3f│ │ 3f│ │ 3f│ │ 3f│ │ 3f│ │ 3f│ │ 3f│                │
+│  └─┬─┘ └─┬─┘ └─┬─┘ └─┬─┘ └─┬─┘ └─┬─┘ └─┬─┘                │
+│    │     │     │     │     │     │     │                    │
+│    ▼     ▼     ▼     ▼     ▼     ▼     ▼                    │
+│  Decode Decode Decode Decode Decode Decode Decode           │
+│    │     │     │     │     │     │     │                    │
+│    ▼     ▼     ▼     ▼     ▼     ▼     ▼                    │
+│  Stream Stream Stream Stream Stream Stream Stream           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key Points**:
+- **Blocks** enable progressive streaming (see frames earlier)
+- **Segments** enable memory management (avoid OOM for long videos)
+- Both work together automatically in `run_streaming_generation()`
+
+---
+
+## Progressive Streaming API
+
+### Usage Modes
+
+#### Mode 1: Single-Segment Block-Wise Streaming
+
+**Use Case**: Short video with real-time feedback.
+
+```python
+from inferix.pipeline.self_forcing.pipeline import SelfForcingPipeline
+from inferix.core.media.webrtc_streaming import PersistentWebRTCStreamer
+
+# Initialize pipeline
+pipeline = SelfForcingPipeline(
+    config_path="example/self_forcing/configs/self_forcing_dmd.yaml"
+)
+pipeline.load_checkpoint("./weights/self_forcing/checkpoints/self_forcing_dmd.pt")
+pipeline.setup()
+
+# Initialize WebRTC
+webrtc_streamer = PersistentWebRTCStreamer()
+webrtc_streamer.connect(width=832, height=480, fps=16, port=8000)
+
+# Generate with progressive streaming
+pipeline.run_streaming_generation(
+    prompts=['a cat walking'],
+    stream_callback=webrtc_streamer.stream_batch,
+    num_segments=1,        # Single segment
+    segment_length=21,     # 7 blocks × 3 frames/block
+    num_samples=1
+)
+```
+
+**Timeline** (21-frame generation):
+```
+Time    Block   Frames      User Experience
+----    -----   ------      ---------------
+0.0s    Start   -           Generation begins
+0.5s    0       [0,1,2]     ✅ User sees first 3 frames!
+1.0s    1       [3,4,5]     ✅ 3 more frames appear
+1.5s    2       [6,7,8]     ✅ 3 more frames appear
+...
+3.5s    6       [18,19,20]  ✅ Final 3 frames, complete!
+```
+
+**Benefit**: User sees content after **0.5s** instead of waiting **3.5s**!
+
+#### Mode 2: Multi-Segment Long-Video Streaming
+
+**Use Case**: Long video for WebRTC testing and demos.
+
+```python
+# Generate long video (10 segments = ~183 frames)
+pipeline.run_streaming_generation(
+    prompts=['a cat walking in a garden'],
+    stream_callback=webrtc_streamer.stream_batch,
+    num_segments=10,       # 10 segments
+    segment_length=21,     # 21 frames per segment
+    overlap_frames=3,      # 3 frames overlap between segments
+    num_samples=1,
+    low_memory=True        # Enable memory optimization
+)
+```
+
+**Segment Flow**:
+```
+Segment 0: Frames [0-20]       (21 frames) → cleanup
+Segment 1: Frames [18-38]      (21 frames, overlap 3) → cleanup
+                  ↑ overlap
+Segment 2: Frames [36-56]      (21 frames, overlap 3) → cleanup
+...
+Segment 9: Frames [162-182]    (21 frames, overlap 3) → cleanup
+
+Total unique frames: 10×21 - 9×3 = 183 frames
+Total generation time: ~35 seconds
+```
+
+**Memory Advantage**: CUDA cache cleared after each segment, preventing OOM.
+
+### API Reference
+
+```python
+pipeline.run_streaming_generation(
+    prompts: List[str],                              # Text prompts
+    stream_callback: Optional[Callable] = None,      # Streaming callback
+    num_segments: int = 1,                           # Number of segments
+    segment_length: int = 21,                        # Frames per segment
+    overlap_frames: int = 3,                         # Overlap between segments
+    **kwargs                                         # num_samples, low_memory, etc.
+) -> torch.Tensor
+```
+
+**Parameters**:
+- `num_segments`: 
+  - `1` = short video with block-wise streaming
+  - `10-20` = long video for WebRTC testing
+- `segment_length`: Must be multiple of 3 (block size) for Self-Forcing
+  - Recommended: 21, 24, 30
+- `overlap_frames`: Overlap between segments for smooth transitions
+  - Recommended: 3 (1 block)
+- `stream_callback`: Callback receiving decoded frames
+  - Signature: `callback(frames: torch.Tensor)`  
+  - frames: `[T, H, W, C]`, `uint8`, range `[0, 255]`
+
+**Callback Example**:
+```python
+def my_stream_callback(frames: torch.Tensor):
+    """
+    Called for each decoded block.
+    
+    Args:
+        frames: [T, H, W, C], uint8, range [0, 255]
+                T = 3 for Self-Forcing (block size)
+    """
+    # Send to WebRTC
+    webrtc_streamer.stream_batch(frames)
+    
+    # Or save to disk
+    for i, frame in enumerate(frames):
+        save_image(frame, f"frame_{i}.png")
+```
+
+---
+
+## Traditional Streaming
+
+### WebRTC (Recommended)
 
 ## Prerequisites
 
@@ -20,18 +250,20 @@ Suppose `./weights` under the Inferix project is the model weight directory.
    huggingface-cli download gdhe17/Self-Forcing checkpoints/self_forcing_dmd.pt --local-dir ./weights/self_forcing
    ```
 
-## Video Streaming Support
+---
 
-Inferix supports two streaming protocols for real-time video generation preview:
+## Traditional Streaming
 
-### 🎯 WebRTC (Recommended)
+Traditional streaming streams the complete video after generation finishes.
+
+### WebRTC (Recommended)
 
 **Why WebRTC?**
-- ✅ **Easier to Use**: No external server required, works out of the box
-- ✅ **Better Ecosystem**: Rapidly growing community support and development
-- ✅ **Native Web Integration**: Seamlessly integrates with Gradio and other WebUI frameworks
-- ✅ **Lower Latency**: Direct peer-to-peer connection for real-time streaming
-- ✅ **Built-in UI**: Automatic web interface at `http://localhost:8000`
+- ✅ **Easier to Use**: No external server required
+- ✅ **Better Ecosystem**: Rapidly growing community
+- ✅ **Native Web Integration**: Works with Gradio and WebUI frameworks
+- ✅ **Lower Latency**: Direct peer-to-peer connection
+- ✅ **Built-in UI**: Automatic interface at `http://localhost:8000`
 
 **Installation**:
 ```bash
@@ -174,3 +406,271 @@ Key configuration parameters:
 | Use Case | Interactive demos, WebUI | Production streaming |
 
 **Recommendation**: Use **WebRTC** for development, demos, and interactive applications. Use **RTMP** when integrating with existing streaming infrastructure.
+
+---
+
+## Examples
+
+### Example 1: Progressive Streaming Script
+
+See [`run_progressive_streaming.py`](./run_progressive_streaming.py) for a complete example.
+
+**Run**:
+```bash
+export PYTHONPATH=`pwd`:$PYTHONPATH
+python example/streaming/run_progressive_streaming.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat walking" \
+    --num_segments 5 \
+    --segment_length 21 \
+    --overlap_frames 3 \
+    --enable_webrtc
+```
+
+### Example 2: Traditional Streaming
+
+For traditional streaming after generation, use the standard Self-Forcing script:
+
+```bash
+export PYTHONPATH=`pwd`:$PYTHONPATH
+python example/self_forcing/run_self_forcing.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat dancing" \
+    --enable_webrtc
+```
+
+### Example 3: WebRTC Integration in Code
+
+```python
+from inferix.pipeline.self_forcing.pipeline import SelfForcingPipeline
+from inferix.core.media.webrtc_streaming import PersistentWebRTCStreamer
+
+# Setup pipeline
+pipeline = SelfForcingPipeline(
+    config_path="example/self_forcing/configs/self_forcing_dmd.yaml"
+)
+pipeline.load_checkpoint("./weights/self_forcing/checkpoints/self_forcing_dmd.pt")
+pipeline.setup()
+
+# Setup WebRTC
+webrtc = PersistentWebRTCStreamer()
+webrtc.connect(width=832, height=480, fps=16)
+
+# Progressive streaming
+pipeline.run_streaming_generation(
+    prompts=['a dog running'],
+    stream_callback=webrtc.stream_batch,
+    num_segments=10,
+    segment_length=21,
+    overlap_frames=3
+)
+
+print("Open http://localhost:8000 to view stream")
+```
+
+---
+
+## Performance Benchmarking
+
+### Overview
+
+Performance testing leverages Inferix's built-in profiling module to collect detailed metrics.
+The profiling system automatically tracks:
+- Block-level computation and decoding times
+- Diffusion step performance
+- GPU memory usage and utilization
+- Overall throughput (FPS)
+
+### Running Benchmarks
+
+To collect accurate performance metrics for your GPU:
+
+```bash
+export PYTHONPATH=`pwd`:$PYTHONPATH
+
+# Step 1: Run streaming generation with profiling enabled
+python example/streaming/run_progressive_streaming.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --default_config_path example/self_forcing/configs/default_config.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat walking" \
+    --num_segments 10 \
+    --enable_profiling \
+    --profile_output_dir ./profiling_results \
+    --use_ema
+
+# Step 2: Extract metrics for documentation
+python example/streaming/extract_streaming_metrics.py \
+    --profile_dir ./profiling_results \
+    --output_file benchmark_results.json \
+    --print_markdown
+```
+
+**Output**: 
+- HTML/JSON profiling reports in `./profiling_results/`
+- Extracted metrics in `benchmark_results.json`
+- Markdown-formatted results (if `--print_markdown` is used)
+
+### Metrics Collected
+
+The profiling system captures:
+
+**Block-level Performance**:
+- Diffusion step timing (ms per step)
+- Block computation time (ms per block)
+- Block FPS and Blocks Per Second (BPS)
+- Memory usage per block
+
+**Segment-level Performance**:
+- Time per segment (seconds)
+- Number of segments processed
+
+**Overall Performance**:
+- Total generation time
+- Throughput (FPS)
+- Peak GPU memory usage
+- GPU utilization percentage
+
+### Benchmark Results
+
+> **Note**: Run the benchmark commands above to generate results for your specific GPU.
+> The profiling module will automatically collect all metrics.
+
+**Your GPU**: [To be filled after running benchmark]
+
+**Block-level**:
+- Block size: 3 frames
+- Diffusion step time: [Run benchmark] ms per step
+- Block computation: [Run benchmark] ms per block
+- Block FPS: [Run benchmark]
+- Blocks Per Second: [Run benchmark]
+
+**Segment-level** (21 frames):
+- Blocks per segment: 7
+- Time per segment: [Run benchmark] s
+
+**Long video** (10 segments, ~210 frames):
+- Total time: [Run benchmark] s
+- Throughput: [Run benchmark] FPS
+- Peak memory: [Run benchmark] MB
+- GPU utilization: [Run benchmark]%
+
+### Updating Documentation
+
+After running the benchmark:
+
+1. Check the profiling reports in `./profiling_results/`
+2. Run `extract_streaming_metrics.py` with `--print_markdown`
+3. Copy the formatted output to update "Benchmark Results" section above
+
+Example extracted metrics:
+```json
+{
+  "system_info": {
+    "gpu_name": "NVIDIA GeForce RTX 4060",
+    "gpu_memory_total": 16.0
+  },
+  "block_level": {
+    "avg_step_time_ms": 50.5,
+    "avg_block_time_ms": 450.2,
+    "block_fps": 6.67,
+    "bps": 2.22
+  },
+  "segment_level": {
+    "avg_segment_time_s": 3.15
+  },
+  "overall": {
+    "throughput_fps": 6.67,
+    "peak_memory_mb": 8192,
+    "avg_gpu_utilization": 92.5
+  }
+}
+```
+
+---
+
+## Comparison: Progressive vs Traditional
+
+| Feature | Progressive Streaming | Traditional Streaming |
+|---------|----------------------|----------------------|
+| **First Frame Latency** | ~0.5s (first block) | ~3.5s (full video) |
+| **Memory Management** | ✅ Automatic cleanup | ❌ Manual control |
+| **Long Videos** | ✅ Unlimited with segments | ❌ OOM risk |
+| **User Experience** | ✅ Progressive feedback | ❌ Wait then play |
+| **WebRTC Integration** | ✅ Real-time streaming | ✅ Post-gen streaming |
+| **Use Case** | Interactive demos, testing | Quick generation |
+
+---
+
+## FAQ
+
+### Q: What's the difference between block and segment?
+
+**A**: 
+- **Block**: Model's 3-frame generation unit (internal detail)
+- **Segment**: Framework's 21-frame cycle (user parameter)
+- A segment contains 7 blocks
+
+### Q: When should I use progressive streaming?
+
+**A**: Use progressive streaming when:
+- Testing WebRTC components with long videos
+- Need real-time user feedback
+- Generating videos longer than GPU memory allows
+- Building interactive applications
+
+### Q: Can I customize segment_length?
+
+**A**: Yes, but must be multiple of block size:
+- Self-Forcing: multiples of 3 (e.g., 21, 24, 30)
+- Will be validated at runtime
+
+### Q: How do I calculate total frames with overlap?
+
+**A**: 
+```
+Total frames = num_segments × segment_length - (num_segments - 1) × overlap_frames
+
+Example: 10 × 21 - 9 × 3 = 183 frames
+```
+
+---
+
+## Troubleshooting
+
+### "segment_length must be multiple of 3"
+**Solution**: Use 21, 24, 30, etc. for Self-Forcing.
+
+### WebRTC not connecting
+**Solution**: 
+1. Check port 8000 is not in use
+2. Install `fastrtc`: `pip install fastrtc`
+3. Check firewall settings
+
+### Out of memory with long videos
+**Solution**: 
+1. Use progressive streaming with `num_segments > 1`
+2. Enable `low_memory=True`
+3. Reduce `segment_length`
+
+---
+
+## Prerequisites (Detailed)
+
+### Download Model Weights
+
+1. **Wan2.1-T2V-1.3B Base Model**:
+   ```bash
+   huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B \
+       --local-dir-use-symlinks False \
+       --local-dir ./weights/Wan2.1-T2V-1.3B
+   ```
+
+2. **Self-Forcing Checkpoint**:
+   ```bash
+   huggingface-cli download gdhe17/Self-Forcing \
+       checkpoints/self_forcing_dmd.pt \
+       --local-dir ./weights/self_forcing
+   ```

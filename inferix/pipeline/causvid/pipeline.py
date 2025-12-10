@@ -2,7 +2,7 @@ import torch
 import os
 import numpy as np
 from omegaconf import OmegaConf
-from typing import Optional, List
+from typing import Optional, List, Tuple, Callable
 import torch.distributed as dist
 from diffusers.utils import export_to_video
 
@@ -299,6 +299,25 @@ class CausVidPipeline(AbstractInferencePipeline):
             output_path = os.path.join(output_folder, f"{video_name}.mp4")
             print(f"Save videos for prompt to {output_path}")
             export_to_video(video, output_path, fps=16)
+    
+    def _generate_segment_with_streaming(
+        self,
+        prompt: str,
+        initial_latent: Optional[torch.Tensor],
+        stream_callback: Optional[Callable[[torch.Tensor], None]],
+        segment_length: int = 21,
+        **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        [Implementation of abstract method] Generate segment with streaming for CausVid.
+        
+        Note: This is a placeholder implementation. Full streaming support for CausVid
+        requires integration with its rollout-based generation architecture.
+        """
+        raise NotImplementedError(
+            "Streaming generation is not yet implemented for CausVidPipeline. "
+            "Please use the standard run_text_to_video method with num_rollout parameter."
+        )
 
 
 def get_prompt_from_shell(chunk_id):

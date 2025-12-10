@@ -1,7 +1,7 @@
 import torch
 import os
 from omegaconf import OmegaConf
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable, Tuple
 from torchvision import transforms
 from torchvision.io import write_video
 from einops import rearrange
@@ -429,3 +429,195 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                         
                 output_path = os.path.join(output_folder, filename)
                 write_video(output_path, video_255[sample_idx], fps=16)
+    
+    def _generate_segment_with_streaming(
+        self,
+        prompt: str,
+        initial_latent: Optional[torch.Tensor],
+        stream_callback: Optional[Callable[[torch.Tensor], None]],
+        segment_length: int = 21,
+        **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        [Implementation of abstract method] Generate a single segment with block-wise streaming for Self-Forcing.
+        
+        SELF-FORCING ARCHITECTURE:
+        -------------------------
+        - BLOCK SIZE: 3 frames (num_frame_per_block=3)
+          * Each block is generated using semi-autoregressive decoding
+          * KV cache is updated after each block for autoregressive continuation
+          * Block generation: ~500ms (depending on hardware)
+        
+        - SEGMENT SIZE: 21 frames (default) = 7 blocks
+          * One complete generation cycle
+          * Total time: ~3.5s (7 blocks × 500ms/block)
+        
+        BLOCK-WISE STREAMING FLOW:
+        --------------------------
+        For a 21-frame segment:
+        
+        Time    Block   Frames      Action
+        ----    -----   ------      ------
+        0.0s    0       [0,1,2]     Generate latent → Decode → Stream 3 frames
+        0.5s    1       [3,4,5]     Generate latent → Decode → Stream 3 frames
+        1.0s    2       [6,7,8]     Generate latent → Decode → Stream 3 frames
+        1.5s    3       [9,10,11]   Generate latent → Decode → Stream 3 frames
+        2.0s    4       [12,13,14]  Generate latent → Decode → Stream 3 frames
+        2.5s    5       [15,16,17]  Generate latent → Decode → Stream 3 frames
+        3.0s    6       [18,19,20]  Generate latent → Decode → Stream 3 frames
+        3.5s    Done    21 frames   Return full segment + final latent
+        
+        BENEFIT: User sees first 3 frames after 0.5s instead of waiting 3.5s for all 21 frames!
+        
+        USAGE EXAMPLE:
+        --------------
+        # Example 1: Short video with real-time streaming
+        pipeline.run_streaming_generation(
+            prompts=['a cat walking'],
+            stream_callback=webrtc_streamer.stream_batch,
+            num_segments=1,
+            segment_length=21  # 7 blocks of 3 frames each
+        )
+        # WebRTC receives frames progressively: 3 frames every ~500ms
+        
+        # Example 2: Long video with segment looping
+        pipeline.run_streaming_generation(
+            prompts=['a cat walking'],
+            stream_callback=webrtc_streamer.stream_batch,
+            num_segments=10,       # 10 segments
+            segment_length=21,     # 21 frames per segment
+            overlap_frames=3       # 3 frames overlap (1 block)
+        )
+        # Total: 10 segments × 21 frames - 9 overlaps × 3 frames = 183 unique frames
+        # WebRTC receives: 3 frames every ~500ms for ~35 seconds of generation
+        
+        Args:
+            prompt (str): Text prompt for current segment.
+            initial_latent (Optional[torch.Tensor]): Initial latent for continuation.
+                - None: T2V mode, start from noise
+                - [B, 3, C, H, W]: I2V or continuation from previous segment
+            stream_callback (Optional[Callable]): Callback for streaming decoded blocks.
+                - Called 7 times for a 21-frame segment (once per block)
+                - Receives: torch.Tensor [3, H, W, C], uint8, range [0, 255]
+            segment_length (int): Number of frames to generate.
+                - Must be multiple of 3 (block size)
+                - Recommended: 21 (7 blocks), 24 (8 blocks), 30 (10 blocks)
+            **kwargs:
+                - num_samples (int): Batch size, default 1
+                - low_memory (bool): Enable memory optimization, default False
+        
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                - decoded_video: [B, segment_length, H, W, C], float32, range [0, 1]
+                - final_latent: [B, segment_length, C, H, W] for next segment continuation
+        
+        Raises:
+            ValueError: If segment_length is not compatible with block size (3).
+        
+        Implementation Details:
+            1. Validates segment_length is multiple of block_size (3)
+            2. Creates block_decode_callback for progressive decoding
+            3. Calls CausalInferencePipeline.inference() with block_callback
+            4. Each block triggers: generate → decode → stream → continue
+            5. Returns concatenated video and final latent for continuation
+        """
+        # Extract parameters from kwargs
+        num_samples = kwargs.get('num_samples', 1)
+        low_memory = kwargs.get('low_memory', False)
+        
+        rank = self.parallel_config.rank
+        
+        # Validate segment length
+        num_frame_per_block = getattr(self.pipeline.args, 'num_frame_per_block', 3)
+        independent_first_frame = getattr(self.pipeline.args, 'independent_first_frame', False)
+        
+        if initial_latent is None and independent_first_frame:
+            # First segment without conditioning: 1 + N*block_size
+            if (segment_length - 1) % num_frame_per_block != 0:
+                valid_values = [1 + num_frame_per_block * i for i in range(1, 10)]
+                raise ValueError(
+                    f"For independent_first_frame mode, segment_length must be 1 + N*{num_frame_per_block}. "
+                    f"Got {segment_length}. Valid values: {valid_values}"
+                )
+        else:
+            # Continuation or non-independent mode: must be multiple of block_size
+            if segment_length % num_frame_per_block != 0:
+                valid_values = [num_frame_per_block * i for i in range(1, 10)]
+                raise ValueError(
+                    f"segment_length must be a multiple of {num_frame_per_block}. "
+                    f"Got {segment_length}. Valid values: {valid_values}"
+                )
+        
+        # Prepare inputs
+        batch_prompts = [prompt] * num_samples
+        noise_frames = segment_length - (initial_latent.shape[1] if initial_latent is not None else 0)
+        
+        sampled_noise = torch.randn(
+            [num_samples, noise_frames, 16, 60, 104],
+            device=self.device,
+            dtype=torch.bfloat16
+        )
+        
+        # Initialize KV cache manager
+        kv_cache_manager = KVCacheManager(device=self.device)
+        kv_cache_requests = [KVCacheRequest(f"stream_req_{idx}") for idx in range(num_samples)]
+        
+        # Create a block callback wrapper for streaming
+        decoded_blocks = []
+        
+        def block_decode_callback(block_latent: torch.Tensor, block_index: int):
+            """Decode and stream a single block immediately after generation"""
+            # Only decode and stream on rank 0
+            if rank != 0:
+                return
+            
+            # Decode block to pixel space
+            with torch.no_grad():
+                block_video = self.pipeline.vae.decode_to_pixel(block_latent, use_cache=False)
+                block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
+                
+                # Convert to [B, T, H, W, C] format
+                block_video = rearrange(block_video, 'b t c h w -> b t h w c')
+                
+                # Store for final concatenation
+                decoded_blocks.append(block_video.cpu())
+                
+                # Stream via callback if provided
+                if stream_callback is not None:
+                    # Stream each sample in the batch
+                    for sample_idx in range(block_video.shape[0]):
+                        # Convert to uint8 for streaming
+                        stream_frames = torch.clamp(block_video[sample_idx] * 255.0, 0, 255).to(torch.uint8)
+                        stream_callback(stream_frames)
+                        
+                print(f"✅ Block {block_index} decoded and streamed ({block_latent.shape[1]} frames)")
+        
+        # Execute inference with block callback
+        print(f"Generating segment: {segment_length} frames, {num_samples} sample(s)")
+        
+        video_latents, final_latents = self.pipeline.inference(
+            noise=sampled_noise,
+            text_prompts=batch_prompts,
+            return_latents=True,
+            initial_latent=initial_latent,
+            kv_cache_manager=kv_cache_manager,
+            kv_cache_requests=kv_cache_requests,
+            low_memory=low_memory,
+            profile=self._profiling_enabled,
+            block_callback=block_decode_callback  # Pass block callback
+        )
+        
+        # Concatenate all decoded blocks
+        if rank == 0 and decoded_blocks:
+            full_video = torch.cat(decoded_blocks, dim=1)  # [B, T, H, W, C]
+        else:
+            # Fallback: decode the entire video if block streaming wasn't used
+            full_video = self.pipeline.vae.decode_to_pixel(final_latents, use_cache=False)
+            full_video = (full_video * 0.5 + 0.5).clamp(0, 1)
+            full_video = rearrange(full_video, 'b t c h w -> b t h w c').cpu()
+        
+        # Clear cache
+        self.pipeline.vae.model.clear_cache()
+        kv_cache_manager.clear_all_cache()
+        
+        return full_video, final_latents
