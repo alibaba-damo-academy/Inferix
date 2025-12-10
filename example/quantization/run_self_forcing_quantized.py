@@ -105,6 +105,57 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def validate_int8_compatibility(args, pipeline):
+    """
+    Validate INT8 quantization compatibility with current configuration.
+    
+    INT8 quantization has hardware limitations:
+    - Batch dimension (batch_size * num_frames_per_block) must be > 16
+    - This is a cuBLAS requirement for int8 matrix multiplication
+    
+    Args:
+        args: Command line arguments
+        pipeline: SelfForcingPipeline instance
+    
+    Returns:
+        bool: True if compatible, False otherwise
+    """
+    if args.quant_type != "int8":
+        return True
+    
+    # Get num_frame_per_block from pipeline config
+    num_frame_per_block = getattr(pipeline.pipeline.args, 'num_frame_per_block', 3)
+    batch_size = args.num_samples
+    
+    # Calculate effective batch size per forward pass
+    # In Self-Forcing, timestep tensor shape is [batch_size, num_frame_per_block]
+    # After flatten, it becomes [batch_size * num_frame_per_block]
+    effective_batch = batch_size * num_frame_per_block
+    
+    if effective_batch <= 16:
+        print("\n" + "="*80)
+        print("❌ INT8 Quantization Compatibility Error")
+        print("="*80)
+        print(f"\nINT8 quantization requires effective batch size > 16, but got {effective_batch}")
+        print(f"\nCurrent configuration:")
+        print(f"  - batch_size (--num_samples): {batch_size}")
+        print(f"  - num_frame_per_block: {num_frame_per_block}")
+        print(f"  - effective_batch = batch_size × num_frame_per_block = {effective_batch}")
+        print(f"\nThis is a cuBLAS hardware limitation for INT8 matrix multiplication.")
+        print(f"\nSolutions:")
+        print(f"  1. Use FP8 quantization instead (recommended):")
+        print(f"     --quant_type fp8")
+        print(f"\n  2. Increase batch size to > 16/num_frame_per_block:")
+        print(f"     --num_samples {17 // num_frame_per_block + 1}  (minimum required: {17 // num_frame_per_block + 1})")
+        print(f"     Note: This will consume significantly more VRAM")
+        print(f"\n  3. Disable quantization:")
+        print(f"     --no_quantize")
+        print("\n" + "="*80)
+        return False
+    
+    return True
+
+
 def setup_distributed_environment(args):
     """Setup distributed environment"""
     if "LOCAL_RANK" in os.environ:
@@ -168,6 +219,11 @@ def main():
     
     # Set device
     pipeline.setup_devices(low_memory=low_memory)
+    
+    # Validate INT8 compatibility before quantization
+    if not args.no_quantize and args.quant_type == "int8":
+        if not validate_int8_compatibility(args, pipeline):
+            sys.exit(1)
     
     # Apply quantization (before inference)
     if not args.no_quantize and HAS_DAX:
