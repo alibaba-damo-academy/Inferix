@@ -127,7 +127,6 @@ def main():
         )
     
     # Initialize pipeline
-    print("Initializing Self-Forcing pipeline...")
     pipeline = SelfForcingPipeline(
         config_path=args.config_path,
         default_config_path=args.default_config_path,
@@ -140,7 +139,6 @@ def main():
     
     # Setup devices
     print("Setting up devices...")
-    pipeline.setup()
     pipeline.setup_devices(low_memory=args.low_memory)
     
     # Initialize streaming

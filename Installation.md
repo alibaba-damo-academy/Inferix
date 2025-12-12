@@ -1,11 +1,5 @@
 # Installation Guide
 
-Before you start, you can optionally configure a pip source for faster downloads (especially for users in China):
-```bash
-pip config set global.index-url https://mirrors.aliyun.com/pypi/simple
-pip config set install.trusted-host mirrors.aliyun.com
-```
-
 ## Install Inferix
 
 ### Option 1: Install with pip (Recommended)
@@ -19,6 +13,12 @@ pip install uv
 # Create a virtual environment (this will create a .venv folder at current project)
 uv venv -p python3.11
 source .venv/bin/activate
+# Ensure a project-local pip is used.
+uv pip install pip setuptools wheel
+
+# Before you start, you can optionally configure a pip source for faster downloads (especially for users in China):
+# pip config set global.index-url https://mirrors.aliyun.com/pypi/simple
+# pip config set install.trusted-host mirrors.aliyun.com
 
 # Install Inferix in editable mode
 pip install -e .

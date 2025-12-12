@@ -47,7 +47,7 @@ class AbstractInferencePipeline(ABC):
             self._profiler = None
             self._profiling_enabled = False
         
-        print(f"Initializing {self.__class__.__name__}{' with profiling enabled' if self._profiling_enabled else ''}...")
+        # Note: Subclass may print more specific initialization messages
 
     def _get_profiler_context(self, stage_name: str, metadata: Optional[Dict[str, Any]] = None):
         """
@@ -122,6 +122,69 @@ class AbstractInferencePipeline(ABC):
             **kwargs: Other optional parameters.
         """
         pass
+    
+    def setup_devices(self, low_memory: bool = False):
+        """
+        [Template Method] Setup devices with meta device optimization.
+        
+        Universal strategy for all pipelines:
+        1. Materialize models from meta device to CPU
+        2. Load checkpoint weights (if available)
+        3. Move models to GPU layer-by-layer
+        
+        Subclasses should implement _get_model_components() to specify their models.
+        
+        Args:
+            low_memory (bool): Enable CPU offloading for memory-constrained GPUs.
+        """
+        import gc
+        import torch
+        from inferix.core.memory.utils import gpu as get_gpu, get_cuda_free_memory_gb
+        
+        gpu = get_gpu()
+        checkpoint = getattr(self, '_checkpoint_state_dict', None)
+        print(f"Initial GPU memory: {get_cuda_free_memory_gb(gpu):.2f} GB free")
+        
+        # Get model components from subclass
+        model_components = self._get_model_components()
+        
+        for name, model in model_components.items():
+            print(f"Loading {name}...")
+            self._materialize_and_load(model, name, gpu, checkpoint, low_memory)
+            torch.cuda.empty_cache()
+            gc.collect()
+            print(f"After {name}: {get_cuda_free_memory_gb(gpu):.2f} GB free")
+        
+        print("✅ All models loaded successfully")
+    
+    def _get_model_components(self) -> Dict[str, Any]:
+        """
+        [Template Method] Return model components to be loaded.
+        
+        Subclasses must override this to specify their models.
+        
+        Returns:
+            Dict mapping component name to model object.
+            Example: {'text_encoder': self.pipeline.text_encoder, 'generator': ...}
+        """
+        return {}
+    
+    def _materialize_and_load(self, model, name: str, gpu, checkpoint, low_memory: bool):
+        """
+        [Concrete Method] Materialize model from meta device and load to GPU.
+        
+        This is the universal loading logic. Subclasses can override for custom behavior.
+        """
+        import torch
+        from inferix.core.memory.utils import DynamicSwapInstaller
+        
+        model.to_empty(device='cpu')
+        model.to(dtype=torch.bfloat16)
+        
+        if low_memory:
+            DynamicSwapInstaller.install_model(model, device=gpu)
+        else:
+            model.to(device=gpu)
 
     def setup(self):
         """

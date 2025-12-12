@@ -53,26 +53,21 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
     @profile_method("pipeline_initialization")
     def _initialize_pipeline(self, *args, **kwargs):
-        """Initialize the inference pipeline"""
+        """Initialize the inference pipeline on meta device to avoid CPU OOM"""
         torch.set_grad_enabled(False)
-            
-        # Select pipeline type based on configuration
-        if hasattr(self.config, 'denoising_step_list'):
-            self.pipeline = CausalInferencePipeline(
-                self.config, 
-                device=self.device, 
-                parallel_config=self.parallel_config,
-                profiler=self._profiler  # Pass profiler to the pipeline
-            )
-            self._pipeline_type = "causal"
-        else:
-            self.pipeline = CausalDiffusionInferencePipeline(
-                self.config, 
-                device=self.device
-            )
-            self._pipeline_type = "diffusion"
-                
-        self.pipeline = self.pipeline.to(dtype=torch.bfloat16)
+        print(f"Initializing {self.__class__.__name__} (meta device, 0 MB)...")
+        
+        # Create pipeline on meta device (zero memory footprint)
+        meta_device = torch.device("meta")
+        pipeline_class = CausalInferencePipeline if hasattr(self.config, 'denoising_step_list') else CausalDiffusionInferencePipeline
+        
+        self.pipeline = pipeline_class(
+            self.config,
+            device=meta_device,
+            parallel_config=self.parallel_config,
+            profiler=self._profiler if pipeline_class == CausalInferencePipeline else None
+        )
+        self._pipeline_type = "causal" if pipeline_class == CausalInferencePipeline else "diffusion"
         
     def _init_model(self) -> Any:
         """[Implementation of abstract method] Initialize and return the specific model instance"""
@@ -85,52 +80,71 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         "use_ema": kwargs.get('use_ema', False)
     })
     def load_checkpoint(self, checkpoint_path: str, **kwargs) -> None:
-        """[Implementation of abstract method] Load model checkpoint weights"""
+        """Load checkpoint to CPU, defer GPU loading to setup_devices"""
+        if not checkpoint_path:
+            return
+            
         use_ema = kwargs.get('use_ema', False)
-        if checkpoint_path:
-            state_dict = torch.load(checkpoint_path, map_location="cpu")
-            key = 'generator_ema' if use_ema else 'generator'
-            
-            # Check if the expected key exists in checkpoint
-            if key not in state_dict:
-                available_keys = list(state_dict.keys())
-                print(f"Warning: Key '{key}' not found in checkpoint. Available keys: {available_keys}")
-                
-                # Try fallback keys
-                fallback_key = 'generator_ema' if key == 'generator' else 'generator'
-                if fallback_key in state_dict:
-                    print(f"Using fallback key: '{fallback_key}'")
-                    key = fallback_key
-                else:
-                    # Checkpoint might be the model state_dict directly
-                    print("Attempting to load state_dict directly...")
-                    if hasattr(self.pipeline, 'generator'):
-                        self.pipeline.generator.load_state_dict(state_dict)
-                    else:
-                        self.pipeline.load_state_dict(state_dict)
-                    return
-            
-            if hasattr(self.pipeline, 'generator'):
-                self.pipeline.generator.load_state_dict(state_dict[key])
-            else:
-                # If pipeline doesn't have a generator attribute, load directly to pipeline
-                self.pipeline.load_state_dict(state_dict[key])
+        state_dict = torch.load(checkpoint_path, map_location="cpu")
+        key = 'generator_ema' if use_ema else 'generator'
+        
+        if key not in state_dict:
+            available_keys = list(state_dict.keys())
+            print(f"Warning: Key '{key}' not found. Available: {available_keys}")
+            fallback_key = 'generator_ema' if key == 'generator' else 'generator'
+            key = fallback_key if fallback_key in state_dict else None
+        
+        # Store checkpoint for GPU loading in setup_devices
+        self._checkpoint_state_dict = state_dict[key] if key else state_dict
+        print("✅ Checkpoint loaded to CPU")
 
-    @profile_method("setup_devices")
-    @add_profiling_event("devices_setup", lambda result, *args, **kwargs: {
-        "low_memory": kwargs.get('low_memory', False)
-    })
-    def setup_devices(self, low_memory: bool = False):
-        """Setup devices and memory management"""
-        gpu = get_gpu()
-            
-        if low_memory:
-            DynamicSwapInstaller.install_model(self.pipeline.text_encoder, device=gpu)
+    def _get_model_components(self) -> Dict[str, Any]:
+        """Return Self-Forcing model components in loading order"""
+        return {
+            'text_encoder': self.pipeline.text_encoder,
+            'generator': self.pipeline.generator,
+            'vae': self.pipeline.vae
+        }
+    
+    def _materialize_and_load(self, model, name: str, gpu, checkpoint, low_memory: bool):
+        """Override to add layer-by-layer loading for generator"""
+        if name == 'generator' and low_memory and checkpoint and hasattr(model, 'transformer_blocks'):
+            # Special handling: layer-by-layer loading for generator
+            self._load_generator_layered(model, gpu, checkpoint)
         else:
-            self.pipeline.text_encoder.to(device=gpu)
-                
-        self.pipeline.generator.to(device=gpu)
-        self.pipeline.vae.to(device=gpu)
+            # Use base class implementation for other models
+            super()._materialize_and_load(model, name, gpu, checkpoint, low_memory)
+    
+    def _load_generator_layered(self, generator, gpu, checkpoint):
+        """Load generator transformer blocks layer-by-layer"""
+        from inferix.core.memory.utils import get_cuda_free_memory_gb
+        import torch
+        
+        num_blocks = len(generator.transformer_blocks)
+        print(f"  Materializing {num_blocks} blocks from meta device...")
+        
+        # Load transformer blocks one by one
+        for i, block in enumerate(generator.transformer_blocks):
+            block.to_empty(device='cpu')
+            block_prefix = f"transformer_blocks.{i}."
+            block_state = {k[len(block_prefix):]: v for k, v in checkpoint.items() if k.startswith(block_prefix)}
+            if block_state:
+                block.load_state_dict(block_state, assign=True)
+            block.to(device=gpu, dtype=torch.bfloat16)
+            
+            if (i + 1) % 5 == 0:
+                torch.cuda.empty_cache()
+                print(f"  Loaded {i+1}/{num_blocks} blocks, {get_cuda_free_memory_gb(gpu):.2f} GB free")
+        
+        # Load other components (conv_in, conv_out, norm_out, time_embed)
+        for name in ['conv_in', 'conv_out', 'norm_out', 'time_embed']:
+            if hasattr(generator, name):
+                module = getattr(generator, name)
+                module.to_empty(device='cpu')
+                module_state = {k[len(name)+1:]: v for k, v in checkpoint.items() if k.startswith(f"{name}.")}
+                if module_state:
+                    module.load_state_dict(module_state, assign=True)
+                module.to(device=gpu, dtype=torch.bfloat16)
         
     def load_image(self, image_path: str) -> torch.Tensor:
         """Load and preprocess image for I2V"""
@@ -618,6 +632,7 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
         # Clear cache
         self.pipeline.vae.model.clear_cache()
-        kv_cache_manager.clear_all_cache()
+        for req in kv_cache_requests:
+            kv_cache_manager.free(req)
         
         return full_video, final_latents
