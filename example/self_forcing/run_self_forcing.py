@@ -33,14 +33,7 @@ def parse_arguments():
                         help="Whether to save the video using the index or prompt as the filename")
     parser.add_argument("--ulysses_size", type=int, default=1, help="Size of Ulysses Parallel")
     parser.add_argument("--ring_size", type=int, default=1, help="Size of Ring Sequence Parallel")
-    parser.add_argument("--rtmp_url", type=str, default=None,
-                        help="RTMP streaming URL, e.g., rtmp://localhost:1935/live/livestream. "
-                             "If specified, stream while generating. Uses SRS by default; "
-                             "you can replace it with your own RTMP-compatible player/server.")
-    parser.add_argument("--rtmp_fps", type=int, default=16,
-                        help="RTMP streaming frame rate, default is 16")
     parser.add_argument("--enable_profiling", action="store_true", help="Whether to enable profiling")
-    parser.add_argument("--enable_webrtc", action="store_true", help="Whether to enable WebRTC streaming")  
     return parser.parse_args()
 
 
@@ -134,10 +127,7 @@ def main():
             output_folder=args.output_folder,
             save_with_index=args.save_with_index,
             use_ema=args.use_ema,
-            rtmp_url=args.rtmp_url,
-            rtmp_fps=args.rtmp_fps,
             enable_profiling=args.enable_profiling,
-            enable_webrtc=args.enable_webrtc,
             low_memory=low_memory
         )
     

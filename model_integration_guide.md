@@ -312,14 +312,30 @@ class YourModelConfig:
 Implement video streaming capabilities using Inferix's streaming utilities:
 
 ```python
-from inferix.core.media.streaming import PersistentRTMPStreamer
+from inferix.core.media import create_streaming_backend
 
-def _save_and_stream_video(self, video: torch.Tensor, rtmp_url: Optional[str] = None):
-    if rtmp_url:
-        rtmp_streamer = PersistentRTMPStreamer()
-        if rtmp_streamer.connect(rtmp_url):
-            rtmp_streamer.stream_batch(video)
-            rtmp_streamer.disconnect()
+def _save_and_stream_video(self, video: torch.Tensor, backend: str = "rtmp", **kwargs):
+    """Save and optionally stream video.
+    
+    Args:
+        video: Video tensor to stream
+        backend: Streaming backend ("gradio", "webrtc", "rtmp")
+        **kwargs: Backend-specific parameters (e.g., rtmp_url for RTMP)
+    """
+    streamer = create_streaming_backend(backend)
+    if streamer.connect(**kwargs):
+        streamer.stream_batch(video)
+        streamer.disconnect()
+```
+
+**Example usage**:
+
+```python
+# Gradio streaming (default, best for development)
+self._save_and_stream_video(video, backend="gradio", width=832, height=480, fps=16)
+
+# RTMP streaming (production)
+self._save_and_stream_video(video, backend="rtmp", rtmp_url="rtmp://localhost/live/stream")
 ```
 
 ## Troubleshooting

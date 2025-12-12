@@ -336,12 +336,17 @@ class AbstractInferencePipeline(ABC):
         
         USAGE MODES:
         -----------
-        Mode 1: Single-Segment Block-Wise Streaming (Solution 1)
+        Mode 1: Single-Segment Block-Wise Streaming
             Use Case: Short video (e.g., 21 frames) with real-time streaming
             Example:
+                from inferix.core.media import create_streaming_backend
+                
+                streamer = create_streaming_backend("gradio")
+                streamer.connect(width=832, height=480, fps=16)
+                
                 pipeline.run_streaming_generation(
                     prompts=['a cat walking'],
-                    stream_callback=webrtc_streamer.stream_batch,
+                    stream_callback=streamer.stream_batch,
                     num_segments=1,
                     segment_length=21  # 7 blocks × 3 frames/block
                 )
@@ -351,12 +356,12 @@ class AbstractInferencePipeline(ABC):
                 ...
                 Block 6 (frames 18-20) → decode → stream → done
         
-        Mode 2: Multi-Segment Long-Video Streaming (Solution 4)
+        Mode 2: Multi-Segment Long-Video Streaming
             Use Case: Long video (e.g., 210 frames) with memory management
             Example:
                 pipeline.run_streaming_generation(
                     prompts=['a cat walking'],
-                    stream_callback=webrtc_streamer.stream_batch,
+                    stream_callback=streamer.stream_batch,
                     num_segments=10,        # 10 segments
                     segment_length=21,      # 21 frames per segment
                     overlap_frames=3        # 3 frames overlap between segments
@@ -399,7 +404,7 @@ class AbstractInferencePipeline(ABC):
         Note:
             - Block-wise streaming is implemented by each model's _generate_segment_with_streaming()
             - Segment-level looping is handled by this framework method
-            - For WebRTC testing, use num_segments=10-20 to generate long streams
+            - For long video testing, use num_segments=10-20
         """
         print(f"Starting streaming generation: {num_segments} segment(s), {segment_length} frames each")
         

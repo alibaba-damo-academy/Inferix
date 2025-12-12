@@ -1,10 +1,11 @@
-# rtmp_streamer.py
+"""RTMP streaming backend (lowest priority, for production streaming)."""
+from inferix.core.media.streaming_backend import StreamingBackend
 import torch
 import numpy as np
 import av
 import fractions
 import time
-from typing import Optional, Any
+from typing import Optional
 
 # Try to import profiling components, but make them optional
 try:
@@ -15,17 +16,32 @@ except ImportError:
     PROFILING_AVAILABLE = False
 
 
-class PersistentRTMPStreamer:
+class RTMPStreamingBackend(StreamingBackend):
+    """RTMP streaming for production environments."""
+    
     def __init__(self):
+        super().__init__()
         self.container = None
         self.stream = None
-        self.is_connected = False
         self.fps = 16
         self.frame_count = 0
         self.start_time = None
 
-    def connect(self, rtmp_url: str, width: int, height: int, fps: int = 16):
-        """Establish a persistent RTMP connection."""
+    def connect(self, width: int, height: int, fps: int = 16, rtmp_url: str = None, **kwargs) -> bool:
+        """Establish RTMP connection.
+        
+        Args:
+            width: Video width
+            height: Video height
+            fps: Frames per second
+            rtmp_url: RTMP server URL (e.g. rtmp://localhost/live/stream)
+            **kwargs: Additional parameters (ignored)
+            
+        Returns:
+            True if connection successful
+        """
+        if not rtmp_url:
+            raise ValueError("rtmp_url is required for RTMP backend")
         try:
             self.fps = fps
 
@@ -72,9 +88,15 @@ class PersistentRTMPStreamer:
             self.is_connected = False
             return False
 
-    @profile_streaming(lambda args, kwargs: args[1].shape[0] if len(args) > 1 and hasattr(args[1], 'shape') else 1)
-    def stream_batch(self, x: torch.Tensor):
-        """Stream a batch of frames — expects uint8 tensor of shape [T, H, W, C]."""
+    def stream_batch(self, x: torch.Tensor) -> bool:
+        """Stream a batch of frames.
+        
+        Args:
+            x: Tensor of shape [T, H, W, C], dtype uint8, range [0, 255]
+            
+        Returns:
+            True if streaming successful
+        """
         if not self.is_connected:
             return False
 

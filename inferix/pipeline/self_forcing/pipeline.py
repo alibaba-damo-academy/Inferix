@@ -13,8 +13,7 @@ from inferix.pipeline.self_forcing.CausalInferencePipeline import CausalInferenc
 from inferix.pipeline.self_forcing.CausalDiffusionInferencePipeline import CausalDiffusionInferencePipeline
 from inferix.kvcache_manager.kvcache_manager import KVCacheRequest, KVCacheManager
 from inferix.models.wan_base.utils.parallel_config import ParallelConfig
-from inferix.core.media.streaming import PersistentRTMPStreamer
-from inferix.core.media.webrtc_streaming import PersistentWebRTCStreamer
+from inferix.core.media import create_streaming_backend
 
 from inferix.pipeline.base_pipeline import AbstractInferencePipeline
 from inferix.profiling.config import ProfilingConfig
@@ -80,12 +79,25 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         "use_ema": kwargs.get('use_ema', False)
     })
     def load_checkpoint(self, checkpoint_path: str, **kwargs) -> None:
-        """Load checkpoint to CPU, defer GPU loading to setup_devices"""
+        """Load checkpoint to CPU with optional mmap for faster repeated loading"""
         if not checkpoint_path:
             return
             
         use_ema = kwargs.get('use_ema', False)
-        state_dict = torch.load(checkpoint_path, map_location="cpu")
+        use_mmap = kwargs.get('use_mmap', True)  # Enable mmap by default
+        
+        # Load with mmap for faster repeated access
+        load_kwargs = {'map_location': 'cpu'}
+        if use_mmap:
+            try:
+                load_kwargs['mmap'] = True
+                state_dict = torch.load(checkpoint_path, **load_kwargs)
+            except Exception:
+                # Fallback if mmap not supported
+                state_dict = torch.load(checkpoint_path, map_location='cpu')
+        else:
+            state_dict = torch.load(checkpoint_path, map_location='cpu')
+        
         key = 'generator_ema' if use_ema else 'generator'
         
         if key not in state_dict:
@@ -96,7 +108,7 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
         # Store checkpoint for GPU loading in setup_devices
         self._checkpoint_state_dict = state_dict[key] if key else state_dict
-        print("✅ Checkpoint loaded to CPU")
+        print("✅ Checkpoint loaded to CPU" + (" (mmap mode)" if use_mmap else ""))
 
     def _get_model_components(self) -> Dict[str, Any]:
         """Return Self-Forcing model components in loading order"""
@@ -168,10 +180,7 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         output_folder: Optional[str] = None,
         save_with_index: bool = False,
         use_ema: bool = False,
-        rtmp_url: Optional[str] = None,
-        rtmp_fps: int = 16,
         low_memory: bool = False,
-        enable_webrtc: Optional[bool] = False,
         **kwargs
     ) -> torch.Tensor:
         """[Implementation of abstract method] Run text-to-video generation"""
@@ -197,9 +206,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             output_folder=output_folder,
             save_with_index=save_with_index,
             use_ema=use_ema,
-            rtmp_url=rtmp_url,
-            rtmp_fps=rtmp_fps,
-            enable_webrtc=enable_webrtc,
             low_memory=low_memory
         )
         
@@ -217,8 +223,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         output_folder: Optional[str] = None,
         save_with_index: bool = False,
         use_ema: bool = False,
-        rtmp_url: Optional[str] = None,
-        rtmp_fps: int = 16,
         low_memory: bool = False,
         **kwargs
     ) -> torch.Tensor:
@@ -258,8 +262,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             output_folder=output_folder,
             save_with_index=save_with_index,
             use_ema=use_ema,
-            rtmp_url=rtmp_url,
-            rtmp_fps=rtmp_fps,
             low_memory=low_memory
         )
         
@@ -278,9 +280,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         output_folder: Optional[str] = None,
         save_with_index: bool = False,
         use_ema: bool = False,
-        rtmp_url: Optional[str] = None,
-        rtmp_fps: int = 16,
-        enable_webrtc: bool = False,
         low_memory: bool = False
     ) -> torch.Tensor:
         """Execute the core inference logic"""
@@ -316,22 +315,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                 
         if dist.is_initialized():
             dist.barrier()
-                
-        # Initialize RTMP stream
-        rtmp_streamer = None
-        if rtmp_url and rank == 0:
-            rtmp_streamer = PersistentRTMPStreamer()
-            if not rtmp_streamer.connect(rtmp_url, width=832, height=480, fps=rtmp_fps):
-                print("⚠️  RTMP streaming initialization failed; saving to local files only.")
-                rtmp_streamer = None
-                
-        # Initialize WebRTC stream
-        webrtc_streamer = None
-        if enable_webrtc and rank == 0:  
-            webrtc_streamer = PersistentWebRTCStreamer()
-            if not webrtc_streamer.connect(width=832, height=480, fps=16, port=8000):
-                print("⚠️  WebRTC streaming initialization failed")
-                webrtc_streamer = None
                     
         all_videos = []
 
@@ -383,13 +366,11 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                     
             all_videos.append(video)
                     
-            # Save and stream (only rank 0)
+            # Save video (only rank 0)
             if rank == 0:
-                self._save_and_stream_video(
+                self._save_video(
                     video, prompt_idx, prompt, num_samples,
-                    output_folder, save_with_index, use_ema,
-                    rtmp_streamer,
-                    webrtc_streamer
+                    output_folder, save_with_index, use_ema
                 )
                         
             # Clear cache
@@ -397,16 +378,11 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                     
             if dist.is_initialized():
                 dist.barrier()
-                        
-        # Clean up RTMP connection
-        if rank == 0 and rtmp_streamer is not None:
-            rtmp_streamer.disconnect()
-            print("✅ RTMP streaming disconnected")
                 
         return torch.cat(all_videos, dim=0) if all_videos else None
 
-    @profile_method("save_and_stream_video")
-    def _save_and_stream_video(
+    @profile_method("save_video")
+    def _save_video(
         self,
         video: torch.Tensor,
         prompt_idx: int,
@@ -414,23 +390,12 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         num_samples: int,
         output_folder: Optional[str],
         save_with_index: bool,
-        use_ema: bool,
-        rtmp_streamer,
-        webrtc_streamer
+        use_ema: bool
     ):
-        """Save video and stream it"""
+        """Save video to file"""
         video = rearrange(video, 'b t c h w -> b t h w c').cpu()
         video_255 = torch.clamp(video * 255.0, 0, 255).to(torch.uint8)
-            
-        # RTMP streaming
-        if rtmp_streamer is not None:
-            for sample_idx in range(num_samples):
-                rtmp_streamer.stream_batch(video_255[sample_idx])     
-
-        # WebRTC streaming
-        if webrtc_streamer is not None:
-            for sample_idx in range(num_samples):
-                webrtc_streamer.stream_batch(video_255[sample_idx])
+        
         # Save to file
         if output_folder:
             model_suffix = "ema" if use_ema else "regular"
@@ -486,24 +451,29 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         USAGE EXAMPLE:
         --------------
         # Example 1: Short video with real-time streaming
+        from inferix.core.media import create_streaming_backend
+        
+        streamer = create_streaming_backend("gradio")
+        streamer.connect(width=832, height=480, fps=16)
+        
         pipeline.run_streaming_generation(
             prompts=['a cat walking'],
-            stream_callback=webrtc_streamer.stream_batch,
+            stream_callback=streamer.stream_batch,
             num_segments=1,
             segment_length=21  # 7 blocks of 3 frames each
         )
-        # WebRTC receives frames progressively: 3 frames every ~500ms
+        # Gradio receives frames progressively: 3 frames every ~500ms
         
         # Example 2: Long video with segment looping
         pipeline.run_streaming_generation(
             prompts=['a cat walking'],
-            stream_callback=webrtc_streamer.stream_batch,
+            stream_callback=streamer.stream_batch,
             num_segments=10,       # 10 segments
             segment_length=21,     # 21 frames per segment
             overlap_frames=3       # 3 frames overlap (1 block)
         )
         # Total: 10 segments × 21 frames - 9 overlaps × 3 frames = 183 unique frames
-        # WebRTC receives: 3 frames every ~500ms for ~35 seconds of generation
+        # Gradio receives: 3 frames every ~500ms for ~35 seconds of generation
         
         Args:
             prompt (str): Text prompt for current segment.

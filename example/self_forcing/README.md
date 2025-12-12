@@ -50,8 +50,6 @@ torchrun --nnodes=1 --nproc-per-node=2 \
 - `--save_with_index`: Save videos using index instead of prompt as filename
 - `--ulysses_size`: Ulysses parallel size (default: 1)
 - `--ring_size`: Ring parallel size (default: 1)
-- `--rtmp_url`: RTMP streaming URL for live streaming
-- `--rtmp_fps`: RTMP streaming frame rate (default: 16)
 
 ### Configuration File
 

@@ -8,24 +8,20 @@ This script demonstrates the progressive streaming feature where:
 4. Memory is automatically cleaned up between segments
 
 Usage:
-    # Short video (single segment)
+    # Gradio streaming (default, recommended)
     python example/streaming/run_progressive_streaming.py \
         --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
         --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
         --prompt "A cat walking" \
-        --num_segments 1 \
-        --enable_webrtc
+        --num_segments 1
 
-    # Long video (multiple segments for WebRTC testing)
+    # RTMP streaming (for production)
     python example/streaming/run_progressive_streaming.py \
         --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
         --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
-        --prompt "A cat walking in a garden" \
-        --num_segments 10 \
-        --segment_length 21 \
-        --overlap_frames 3 \
-        --enable_webrtc \
-        --low_memory
+        --prompt "A cat walking" \
+        --streaming_backend rtmp \
+        --rtmp_url rtmp://localhost:1935/live/stream
 """
 
 import argparse
@@ -38,8 +34,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, project_root)
 
 from inferix.pipeline.self_forcing.pipeline import SelfForcingPipeline
-from inferix.core.media.webrtc_streaming import PersistentWebRTCStreamer
-from inferix.core.media.streaming import PersistentRTMPStreamer
+from inferix.core.media import create_streaming_backend
 from inferix.profiling import ProfilingConfig
 
 
@@ -67,14 +62,13 @@ def main():
                        help='Batch size (number of videos to generate)')
     
     # Streaming options
-    parser.add_argument('--enable_webrtc', action='store_true',
-                       help='Enable WebRTC streaming (recommended)')
-    parser.add_argument('--webrtc_port', type=int, default=8000,
-                       help='WebRTC server port')
+    parser.add_argument('--streaming_backend', type=str, default='gradio',
+                       choices=['gradio', 'webrtc', 'rtmp'],
+                       help='Streaming backend (gradio=default/recommended, webrtc=experimental, rtmp=production)')
+    parser.add_argument('--port', type=int, default=8000,
+                       help='Server port (for gradio/webrtc)')
     parser.add_argument('--rtmp_url', type=str, default=None,
-                       help='RTMP streaming URL (e.g., rtmp://localhost:1935/live/stream)')
-    parser.add_argument('--rtmp_fps', type=int, default=16,
-                       help='RTMP streaming FPS')
+                       help='RTMP URL (required for rtmp backend)')
     
     # Optimization options
     parser.add_argument('--low_memory', action='store_true',
@@ -105,6 +99,7 @@ def main():
     print("Progressive Streaming Generation")
     print("=" * 70)
     print(f"Prompt: {args.prompt}")
+    print(f"Backend: {args.streaming_backend.upper()}")
     print(f"Segments: {args.num_segments}")
     print(f"Segment length: {args.segment_length} frames")
     print(f"Overlap: {args.overlap_frames} frames")
@@ -141,43 +136,44 @@ def main():
     print("Setting up devices...")
     pipeline.setup_devices(low_memory=args.low_memory)
     
-    # Initialize streaming
-    webrtc_streamer = None
-    rtmp_streamer = None
+    # Initialize streaming backend
+    streamer = None
     stream_callback = None
     
-    if args.enable_webrtc:
-        print(f"\nInitializing WebRTC streaming on port {args.webrtc_port}...")
-        webrtc_streamer = PersistentWebRTCStreamer()
-        if webrtc_streamer.connect(width=832, height=480, fps=16, port=args.webrtc_port):
-            print(f"✅ WebRTC server started")
-            print(f"   Open http://localhost:{args.webrtc_port} in your browser")
-            stream_callback = webrtc_streamer.stream_batch
+    try:
+        streamer = create_streaming_backend(args.streaming_backend)
+        
+        # Configure backend-specific parameters
+        if args.streaming_backend == 'rtmp' and not args.rtmp_url:
+            raise ValueError("--rtmp_url required for RTMP backend")
+        
+        connect_params = {
+            'width': 832,
+            'height': 480,
+            'fps': 16
+        }
+        
+        if args.streaming_backend in ['gradio', 'webrtc']:
+            connect_params['port'] = args.port
+        elif args.streaming_backend == 'rtmp':
+            connect_params['rtmp_url'] = args.rtmp_url
+        
+        print(f"\nInitializing {args.streaming_backend.upper()} streaming...")
+        if streamer.connect(**connect_params):
+            print(f"✅ {args.streaming_backend.upper()} ready")
+            stream_callback = streamer.stream_batch
         else:
-            print("❌ Failed to initialize WebRTC")
-            webrtc_streamer = None
-    
-    if args.rtmp_url:
-        print(f"\nInitializing RTMP streaming to {args.rtmp_url}...")
-        rtmp_streamer = PersistentRTMPStreamer()
-        if rtmp_streamer.connect(args.rtmp_url, width=832, height=480, fps=args.rtmp_fps):
-            print("✅ RTMP connected")
-            # Wrap both callbacks if WebRTC is also enabled
-            if stream_callback:
-                original_callback = stream_callback
-                def combined_callback(frames):
-                    original_callback(frames)
-                    rtmp_streamer.stream_batch(frames)
-                stream_callback = combined_callback
-            else:
-                stream_callback = rtmp_streamer.stream_batch
-        else:
-            print("❌ Failed to connect to RTMP")
-            rtmp_streamer = None
-    
-    if not stream_callback:
-        print("\n⚠️  No streaming enabled. Add --enable_webrtc or --rtmp_url")
-        print("   Continuing with generation only...")
+            print(f"❌ Failed to initialize {args.streaming_backend}")
+            print(f"\n💥 Streaming backend initialization failed!")
+            print("   This example requires working streaming backend.")
+            return 1
+    except Exception as e:
+        print(f"❌ Streaming initialization error: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"\n💥 Streaming backend initialization failed!")
+        print("   This example requires working streaming backend.")
+        return 1
     
     # Generate with progressive streaming
     print("\n" + "=" * 70)
@@ -241,16 +237,24 @@ def main():
     
     finally:
         # Cleanup streaming
-        if webrtc_streamer:
-            print("\nDisconnecting WebRTC...")
-            webrtc_streamer.disconnect()
-        if rtmp_streamer:
-            print("Disconnecting RTMP...")
-            rtmp_streamer.disconnect()
+        if streamer:
+            if args.streaming_backend == 'gradio':
+                print(f"\n🔁 Gradio server still running (loop playback active)")
+                print(f"   Access: http://localhost:{args.port}")
+                print("   Press Ctrl+C to stop...")
+                try:
+                    import time
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    print(f"\nStopping {args.streaming_backend}...")
+                    streamer.disconnect()
+            else:
+                print(f"\nDisconnecting {args.streaming_backend}...")
+                streamer.disconnect()
     
     print("\nDone!")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

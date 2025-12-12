@@ -92,7 +92,7 @@ NUM_OUTPUT_FRAMES=21 \
 ./example/quantization/self_forcing_quantized.sh
 ```
 
-**With WebRTC streaming:**
+**Basic usage:**
 
 ```bash
 python example/quantization/run_self_forcing_quantized.py \
@@ -101,7 +101,6 @@ python example/quantization/run_self_forcing_quantized.py \
     --prompt "A cat dancing" \
     --output_folder outputs \
     --quant_type int8 \
-    --enable_webrtc \
     --use_ema
 ```
 

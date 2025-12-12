@@ -1,24 +1,29 @@
 # Streaming Video Generation with Inferix
 
-This guide covers both **traditional streaming** (post-generation) and **progressive streaming** (block-wise generation) for real-time video generation.
+This guide covers **progressive streaming** (block-wise generation) for real-time video generation.
+
+**Streaming Backends** (Priority: Gradio > WebRTC > RTMP):
+- **Gradio** (Default) - Best for development and interactive demos
+- **WebRTC** (Optional) - For real-time P2P communication
+- **RTMP** (Production) - For live streaming to CDN
 
 **GitHub Repository**: [Self-Forcing](https://github.com/guandeh17/Self-Forcing)
 
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
-2. [Architecture: Block vs Segment](#architecture-block-vs-segment)
-3. [Progressive Streaming API](#progressive-streaming-api)
-4. [Traditional Streaming](#traditional-streaming)
+2. [Streaming Backends](#streaming-backends)
+3. [Architecture: Block vs Segment](#architecture-block-vs-segment)
+4. [Progressive Streaming API](#progressive-streaming-api)
 5. [Examples](#examples)
 
 ---
 
 ## Quick Start
 
-### Progressive Streaming (New!)
+### Gradio Streaming (Default, Recommended)
 
-**Use Case**: Generate long videos with real-time streaming and memory management.
+**Use Case**: Development, demos, interactive testing.
 
 ```bash
 export PYTHONPATH=`pwd`:$PYTHONPATH
@@ -26,24 +31,53 @@ python example/streaming/run_progressive_streaming.py \
     --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
     --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
     --prompt "A cat walking in a garden" \
-    --num_segments 10 \
-    --segment_length 21 \
-    --enable_webrtc
+    --num_segments 1
 ```
 
-**What happens**: Generates 10 segments × 21 frames = 183 frames (with overlap), streaming blocks progressively to WebRTC.
+**Access**: Open `http://localhost:8000` in your browser to see real-time generation.
 
-### Traditional Streaming
+### RTMP Streaming (Production)
 
-**Use Case**: Generate short video then stream the complete result.
+**Use Case**: Live streaming to servers/CDN.
 
 ```bash
 export PYTHONPATH=`pwd`:$PYTHONPATH
-python example/self_forcing/run_self_forcing.py \
+python example/streaming/run_progressive_streaming.py \
     --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
     --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
-    --prompt "A cat dancing on the moon" \
-    --enable_webrtc
+    --prompt "A cat walking" \
+    --streaming_backend rtmp \
+    --rtmp_url rtmp://localhost:1935/live/stream
+```
+
+---
+
+## Streaming Backends
+
+### Backend Comparison
+
+| Backend | Latency | Use Case | Features |
+|---------|---------|----------|----------|
+| **Gradio** | 1-2s | Development | Auto-refresh UI, loop playback, easy debugging |
+| **WebRTC** | <100ms | P2P calls | Low latency, browser-to-browser |
+| **RTMP** | 2-5s | Production | CDN compatible, reliable |
+
+### Usage
+
+```python
+from inferix.core.media import create_streaming_backend
+
+# Create backend (gradio/webrtc/rtmp)
+streamer = create_streaming_backend("gradio")
+
+# Connect
+streamer.connect(width=832, height=480, fps=16, port=8000)
+
+# Stream frames
+streamer.stream_batch(frames)  # Tensor [T, H, W, C] uint8
+
+# Disconnect
+streamer.disconnect()
 ```
 
 ---
@@ -116,23 +150,23 @@ python example/self_forcing/run_self_forcing.py \
 
 ```python
 from inferix.pipeline.self_forcing.pipeline import SelfForcingPipeline
-from inferix.core.media.webrtc_streaming import PersistentWebRTCStreamer
+from inferix.core.media import create_streaming_backend
 
 # Initialize pipeline
 pipeline = SelfForcingPipeline(
     config_path="example/self_forcing/configs/self_forcing_dmd.yaml"
 )
 pipeline.load_checkpoint("./weights/self_forcing/checkpoints/self_forcing_dmd.pt")
-pipeline.setup()
+pipeline.setup_devices()
 
-# Initialize WebRTC
-webrtc_streamer = PersistentWebRTCStreamer()
-webrtc_streamer.connect(width=832, height=480, fps=16, port=8000)
+# Initialize Gradio streaming (default)
+streamer = create_streaming_backend("gradio")
+streamer.connect(width=832, height=480, fps=16, port=8000)
 
 # Generate with progressive streaming
 pipeline.run_streaming_generation(
     prompts=['a cat walking'],
-    stream_callback=webrtc_streamer.stream_batch,
+    stream_callback=streamer.stream_batch,
     num_segments=1,        # Single segment
     segment_length=21,     # 7 blocks × 3 frames/block
     num_samples=1
@@ -161,7 +195,7 @@ Time    Block   Frames      User Experience
 # Generate long video (10 segments = ~183 frames)
 pipeline.run_streaming_generation(
     prompts=['a cat walking in a garden'],
-    stream_callback=webrtc_streamer.stream_batch,
+    stream_callback=streamer.stream_batch,
     num_segments=10,       # 10 segments
     segment_length=21,     # 21 frames per segment
     overlap_frames=3,      # 3 frames overlap between segments
@@ -278,8 +312,7 @@ python example/self_forcing/run_self_forcing.py \
     --output_folder example/self_forcing/outputs \
     --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
     --prompt "A cat dancing on the moon; A robot walking in a forest" \
-    --use_ema \
-    --enable_webrtc
+    --use_ema
 ```
 
 **Access**: Open `http://localhost:8000` in your browser to view the live stream.
@@ -345,8 +378,7 @@ python example/self_forcing/run_self_forcing.py \
     --output_folder example/self_forcing/outputs \
     --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
     --prompt "A cat dancing on the moon; A robot walking in a forest" \
-    --use_ema \
-    --enable_webrtc
+    --use_ema
 ```
 
 ### Multi-GPU Distributed Inference
@@ -360,7 +392,6 @@ torchrun --nnodes=1 --nproc-per-node=2 \
     --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
     --prompt "A cat dancing on the moon; A robot walking in a forest" \
     --use_ema \
-    --enable_webrtc \
     --ulysses_size=1 --ring_size=2
 ```
 
@@ -379,9 +410,6 @@ torchrun --nnodes=1 --nproc-per-node=2 \
 - `--save_with_index`: Save videos using index instead of prompt as filename
 - `--ulysses_size`: Ulysses parallel size (default: 1)
 - `--ring_size`: Ring parallel size (default: 1)
-- `--enable_webrtc`: Enable WebRTC streaming (recommended)
-- `--rtmp_url`: RTMP streaming URL for live streaming (e.g., `rtmp://localhost:1935/live/livestream`)
-- `--rtmp_fps`: RTMP streaming frame rate (default: 16)
 
 ### Configuration File
 
@@ -394,28 +422,28 @@ Key configuration parameters:
 - `timestep_shift`: Time step shift parameter
 - `warp_denoising_step`: Whether to warp denoising steps
 
-## Streaming Protocol Comparison
+## Streaming Backend Comparison
 
-| Feature | WebRTC | RTMP |
-|---------|--------|------|
-| Setup Complexity | ⭐⭐⭐⭐⭐ No server needed | ⭐⭐⭐ Requires SRS/nginx |
-| Latency | ⭐⭐⭐⭐⭐ Ultra-low | ⭐⭐⭐ Low |
-| Browser Support | ⭐⭐⭐⭐⭐ Native | ⭐⭐ Requires player |
-| Gradio Integration | ⭐⭐⭐⭐⭐ Native | ⭐⭐ Custom needed |
-| Community Growth | ⭐⭐⭐⭐⭐ Rapidly growing | ⭐⭐⭐ Stable/mature |
-| Use Case | Interactive demos, WebUI | Production streaming |
+| Feature | Gradio | WebRTC (experimental) | RTMP |
+|---------|--------|----------------------|------|
+| Setup Complexity | ⭐⭐⭐⭐⭐ Zero config | ⭐⭐⭐⭐ Requires fastrtc | ⭐⭐⭐ Requires SRS/nginx |
+| Latency | ⭐⭐⭐⭐ Low (~1-2s) | ⭐⭐⭐⭐⭐ Ultra-low (<100ms) | ⭐⭐⭐ Low (~2-5s) |
+| Browser Support | ⭐⭐⭐⭐⭐ Native | ⭐⭐⭐⭐⭐ Native | ⭐⭐ Requires player |
+| Stability | ⭐⭐⭐⭐⭐ Production-ready | ⭐⭐⭐ Experimental | ⭐⭐⭐⭐ Mature |
+| Interactive UI | ⭐⭐⭐⭐⭐ Built-in | ⭐⭐⭐ Custom needed | ⭐⭐ Custom needed |
+| Use Case | Development, demos, testing | Real-time P2P (future) | Production streaming |
 
-**Recommendation**: Use **WebRTC** for development, demos, and interactive applications. Use **RTMP** when integrating with existing streaming infrastructure.
+**Recommendation**: Use **Gradio** (default) for development and interactive applications. Use **RTMP** for production streaming infrastructure.
 
 ---
 
 ## Examples
 
-### Example 1: Progressive Streaming Script
+### Example 1: Progressive Streaming (Recommended)
 
 See [`run_progressive_streaming.py`](./run_progressive_streaming.py) for a complete example.
 
-**Run**:
+**Run with Gradio backend (default, recommended)**:
 ```bash
 export PYTHONPATH=`pwd`:$PYTHONPATH
 python example/streaming/run_progressive_streaming.py \
@@ -424,13 +452,34 @@ python example/streaming/run_progressive_streaming.py \
     --prompt "A cat walking" \
     --num_segments 5 \
     --segment_length 21 \
-    --overlap_frames 3 \
-    --enable_webrtc
+    --overlap_frames 3
+    # --streaming_backend gradio (default, can be omitted)
 ```
 
-### Example 2: Traditional Streaming
+**Run with WebRTC backend (experimental)**:
+```bash
+python example/streaming/run_progressive_streaming.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat walking" \
+    --num_segments 5 \
+    --streaming_backend webrtc
+```
 
-For traditional streaming after generation, use the standard Self-Forcing script:
+**Run with RTMP backend (production)**:
+```bash
+python example/streaming/run_progressive_streaming.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat walking" \
+    --num_segments 5 \
+    --streaming_backend rtmp \
+    --rtmp_url rtmp://localhost:1935/live/stream
+```
+
+### Example 2: Basic Inference
+
+For simple generation without streaming:
 
 ```bash
 export PYTHONPATH=`pwd`:$PYTHONPATH
@@ -438,30 +487,30 @@ python example/self_forcing/run_self_forcing.py \
     --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
     --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
     --prompt "A cat dancing" \
-    --enable_webrtc
+    --output_folder outputs
 ```
 
-### Example 3: WebRTC Integration in Code
+### Example 3: Gradio Integration in Code
 
 ```python
 from inferix.pipeline.self_forcing.pipeline import SelfForcingPipeline
-from inferix.core.media.webrtc_streaming import PersistentWebRTCStreamer
+from inferix.core.media import create_streaming_backend
 
 # Setup pipeline
 pipeline = SelfForcingPipeline(
     config_path="example/self_forcing/configs/self_forcing_dmd.yaml"
 )
 pipeline.load_checkpoint("./weights/self_forcing/checkpoints/self_forcing_dmd.pt")
-pipeline.setup()
+pipeline.setup_devices()
 
-# Setup WebRTC
-webrtc = PersistentWebRTCStreamer()
-webrtc.connect(width=832, height=480, fps=16)
+# Setup Gradio streaming
+streamer = create_streaming_backend("gradio")
+streamer.connect(width=832, height=480, fps=16)
 
 # Progressive streaming
 pipeline.run_streaming_generation(
     prompts=['a dog running'],
-    stream_callback=webrtc.stream_batch,
+    stream_callback=streamer.stream_batch,
     num_segments=10,
     segment_length=21,
     overlap_frames=3
@@ -599,7 +648,7 @@ Example extracted metrics:
 | **Memory Management** | ✅ Automatic cleanup | ❌ Manual control |
 | **Long Videos** | ✅ Unlimited with segments | ❌ OOM risk |
 | **User Experience** | ✅ Progressive feedback | ❌ Wait then play |
-| **WebRTC Integration** | ✅ Real-time streaming | ✅ Post-gen streaming |
+| **Streaming Support** | ✅ Real-time streaming | ✅ Post-gen streaming |
 | **Use Case** | Interactive demos, testing | Quick generation |
 
 ---
@@ -616,7 +665,7 @@ Example extracted metrics:
 ### Q: When should I use progressive streaming?
 
 **A**: Use progressive streaming when:
-- Testing WebRTC components with long videos
+- Testing streaming with long videos
 - Need real-time user feedback
 - Generating videos longer than GPU memory allows
 - Building interactive applications
@@ -643,11 +692,12 @@ Example: 10 × 21 - 9 × 3 = 183 frames
 ### "segment_length must be multiple of 3"
 **Solution**: Use 21, 24, 30, etc. for Self-Forcing.
 
-### WebRTC not connecting
+### Gradio/WebRTC not connecting
 **Solution**: 
 1. Check port 8000 is not in use
-2. Install `fastrtc`: `pip install fastrtc`
+2. For WebRTC backend: Install `fastrtc`: `pip install fastrtc`
 3. Check firewall settings
+4. For WSL: Use the WSL IP address shown in terminal output
 
 ### Out of memory with long videos
 **Solution**: 
