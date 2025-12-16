@@ -284,6 +284,7 @@ class CausalInferencePipeline(torch.nn.Module):
                             kv_cache_manager=kv_cache_manager,
                             kv_cache_requests=kv_cache_requests,
                         )
+                        
                         next_timestep = self.denoising_step_list[index + 1]
                         noisy_input = self.scheduler.add_noise(
                             denoised_pred.flatten(0, 1),

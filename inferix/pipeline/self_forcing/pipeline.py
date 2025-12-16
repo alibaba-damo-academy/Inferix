@@ -119,44 +119,54 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         }
     
     def _materialize_and_load(self, model, name: str, gpu, checkpoint, low_memory: bool):
-        """Override to add layer-by-layer loading for generator"""
-        if name == 'generator' and low_memory and checkpoint and hasattr(model, 'transformer_blocks'):
-            # Special handling: layer-by-layer loading for generator
+        """Override to add special loading logic for different model components"""
+        if name == 'generator' and low_memory and checkpoint and hasattr(model, 'model') and hasattr(model.model, 'blocks'):
+            # Generator: layer-by-layer loading for memory efficiency
             self._load_generator_layered(model, gpu, checkpoint)
+        elif name in ['vae', 'text_encoder']:
+            # VAE and text_encoder: already loaded weights in __init__, just move to GPU
+            import torch
+            from inferix.core.memory.utils import DynamicSwapInstaller
+            
+            model.to(dtype=torch.bfloat16)
+            if low_memory:
+                DynamicSwapInstaller.install_model(model, device=gpu)
+            else:
+                model.to(device=gpu)
         else:
-            # Use base class implementation for other models
+            # Other models: use base class implementation
             super()._materialize_and_load(model, name, gpu, checkpoint, low_memory)
     
     def _load_generator_layered(self, generator, gpu, checkpoint):
-        """Load generator transformer blocks layer-by-layer"""
+        """Load generator block-by-block from checkpoint"""
         from inferix.core.memory.utils import get_cuda_free_memory_gb
         import torch
         
-        num_blocks = len(generator.transformer_blocks)
-        print(f"  Materializing {num_blocks} blocks from meta device...")
+        # First, materialize entire model to CPU
+        print(f"  Materializing generator from meta device...")
+        generator.to_empty(device='cpu')
         
-        # Load transformer blocks one by one
-        for i, block in enumerate(generator.transformer_blocks):
-            block.to_empty(device='cpu')
-            block_prefix = f"transformer_blocks.{i}."
-            block_state = {k[len(block_prefix):]: v for k, v in checkpoint.items() if k.startswith(block_prefix)}
-            if block_state:
-                block.load_state_dict(block_state, assign=True)
-            block.to(device=gpu, dtype=torch.bfloat16)
+        # Load all weights at once
+        print(f"  Loading checkpoint weights...")
+        generator.load_state_dict(checkpoint, assign=True)
+        
+        # Move to GPU block by block to save memory
+        if hasattr(generator.model, 'blocks'):
+            num_blocks = len(generator.model.blocks)
+            print(f"  Moving {num_blocks} blocks to GPU...")
             
-            if (i + 1) % 5 == 0:
-                torch.cuda.empty_cache()
-                print(f"  Loaded {i+1}/{num_blocks} blocks, {get_cuda_free_memory_gb(gpu):.2f} GB free")
+            for i, block in enumerate(generator.model.blocks):
+                block.to(device=gpu, dtype=torch.bfloat16)
+                
+                if (i + 1) % 5 == 0:
+                    torch.cuda.empty_cache()
+                    print(f"  Moved {i+1}/{num_blocks} blocks, {get_cuda_free_memory_gb(gpu):.2f} GB free")
         
-        # Load other components (conv_in, conv_out, norm_out, time_embed)
-        for name in ['conv_in', 'conv_out', 'norm_out', 'time_embed']:
-            if hasattr(generator, name):
-                module = getattr(generator, name)
-                module.to_empty(device='cpu')
-                module_state = {k[len(name)+1:]: v for k, v in checkpoint.items() if k.startswith(f"{name}.")}
-                if module_state:
-                    module.load_state_dict(module_state, assign=True)
-                module.to(device=gpu, dtype=torch.bfloat16)
+        # Move all other components to GPU
+        print(f"  Moving remaining components to GPU...")
+        generator.to(device=gpu, dtype=torch.bfloat16)
+        torch.cuda.empty_cache()
+        print(f"  Generator fully loaded, {get_cuda_free_memory_gb(gpu):.2f} GB free")
         
     def load_image(self, image_path: str) -> torch.Tensor:
         """Load and preprocess image for I2V"""

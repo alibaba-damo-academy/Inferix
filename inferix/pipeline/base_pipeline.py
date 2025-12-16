@@ -29,7 +29,7 @@ class AbstractInferencePipeline(ABC):
         self.model = None
         self._is_setup = False
         
-        # 初始化profiling功能
+        # Initialize profiling functionality
         self._profiling_config = profiling_config
         self._profiler: Optional[InferixProfiler] = None
         self._profiling_enabled = False
@@ -51,14 +51,14 @@ class AbstractInferencePipeline(ABC):
 
     def _get_profiler_context(self, stage_name: str, metadata: Optional[Dict[str, Any]] = None):
         """
-        获取profiler上下文管理器。
+        Get profiler context manager.
         
         Args:
-            stage_name: 阶段名称
-            metadata: 可选的元数据
+            stage_name: Stage name
+            metadata: Optional metadata
             
         Returns:
-            上下文管理器（如果profiling启用则返回真实的profiler上下文，否则返回nullcontext）
+            Context manager (returns real profiler context if profiling is enabled, otherwise nullcontext)
         """
         if self._profiling_enabled and self._profiler is not None:
             return self._profiler.stage(stage_name, metadata)
@@ -66,14 +66,14 @@ class AbstractInferencePipeline(ABC):
 
     def _start_profiling_session(self, session_id: str, tags: Optional[Dict[str, Any]] = None) -> str:
         """
-        开始一个新的profiling会话。
+        Start a new profiling session.
         
         Args:
-            session_id: 会话ID
-            tags: 可选的标签数据
+            session_id: Session ID
+            tags: Optional tag data
             
         Returns:
-            会话ID
+            Session ID
         """
         if self._profiling_enabled and self._profiler is not None:
             return self._profiler.start_session(session_id, tags)
@@ -81,10 +81,10 @@ class AbstractInferencePipeline(ABC):
 
     def _end_profiling_session(self) -> Optional[str]:
         """
-        结束当前的profiling会话。
+        End current profiling session.
         
         Returns:
-            会话ID（如果有活跃会话）
+            Session ID (if there is an active session)
         """
         if self._profiling_enabled and self._profiler is not None:
             return self._profiler.end_session()
@@ -92,11 +92,11 @@ class AbstractInferencePipeline(ABC):
 
     def _add_profiling_event(self, event_name: str, data: Optional[Dict[str, Any]] = None):
         """
-        添加一个自定义事件到当前会话。
+        Add a custom event to current session.
         
         Args:
-            event_name: 事件名称
-            data: 可选的事件数据
+            event_name: Event name
+            data: Optional event data
         """
         if self._profiling_enabled and self._profiler is not None:
             self._profiler.add_event(event_name, data)
@@ -194,7 +194,7 @@ class AbstractInferencePipeline(ABC):
         to execute specific initialization logic.
         To prevent duplicate initialization, the internal state `_is_setup` will be checked.
         """
-        # 使用profiling上下文包装整个setup过程
+        # Wrap entire setup process with profiling context
         with self._get_profiler_context("pipeline_setup"):
             if self._is_setup:
                 print(f"{self.__class__.__name__} is already set up.")
@@ -252,18 +252,18 @@ class AbstractInferencePipeline(ABC):
         Returns:
             Any: Final result of inference.
         """
-        # 使用profiling上下文包装整个run过程
+        # Wrap entire run process with profiling context
         with self._get_profiler_context("pipeline_run"):
-            # 默认实现可以根据输入内容调用相应的推理方法
+            # Default implementation can call corresponding inference method based on input content
             if 'prompts' in inputs and 'image_path' in inputs:
                 return self.run_image_to_video(inputs['prompts'], inputs['image_path'], **kwargs)
             elif 'prompts' in inputs:
                 return self.run_text_to_video(inputs['prompts'], **kwargs)
             elif 'prompt' in inputs and 'image_path' in inputs:
-                # 向后兼容：支持单个prompt
+                # Backward compatibility: support single prompt
                 return self.run_image_to_video([inputs['prompt']], inputs['image_path'], **kwargs)
             elif 'prompt' in inputs:
-                # 向后兼容：支持单个prompt
+                # Backward compatibility: support single prompt
                 return self.run_text_to_video([inputs['prompt']], **kwargs)
             else:
                 raise ValueError("Invalid inputs for pipeline execution")
@@ -283,13 +283,13 @@ class AbstractInferencePipeline(ABC):
         Returns:
             Any: Return result of the `run` method.
         """
-        # 使用profiling上下文包装整个__call__过程
+        # Wrap entire __call__ process with profiling context
         with self._get_profiler_context("pipeline_call"):
             if not self._is_setup:
                 print("Setup has not been called. Calling it now...")
                 self.setup()
             
-            # 将kwargs作为inputs字典传递给run方法
+            # Pass kwargs as inputs dict to run method
             return self.run(inputs=kwargs)
 
     def cleanup_profiling(self):

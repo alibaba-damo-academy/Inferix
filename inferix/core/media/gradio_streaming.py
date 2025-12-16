@@ -23,7 +23,8 @@ class GradioStreamingBackend(StreamingBackend):
         self.current_frame_idx = 0
         self.input_callback = None
 
-    def connect(self, width: int, height: int, fps: int = 16, host="0.0.0.0", port=8000, loop=True, input_callback=None, **kwargs) -> bool:
+    def connect(self, width: int, height: int, fps: int = 16, host="0.0.0.0", port=8000, 
+                 loop=True, input_callback=None, frame_timeout: float = 10.0, **kwargs) -> bool:
         """Connect Gradio streaming server
         
         Args:
@@ -34,6 +35,9 @@ class GradioStreamingBackend(StreamingBackend):
             port: Server port
             loop: Enable loop playback
             input_callback: Optional callback for user input
+            frame_timeout: Timeout for waiting new frames (seconds)
+                          Should be >= max inference time per block
+                          Consumer GPU: 5-30s, Datacenter GPU: 3-5s
         """
         self.loop_playback = loop
         self.input_callback = input_callback
@@ -54,41 +58,63 @@ class GradioStreamingBackend(StreamingBackend):
             
             # Frame generator for streaming
             def frame_generator():
-                """Generator that yields frames continuously"""
-                frame_count = 0
+                """Generator that yields frames continuously with proper keep-alive"""
+                print("⏳ Gradio generator started, waiting for first frame...")
+                
+                # 1. Block and wait for first frame before refreshing UI
+                try:
+                    first_frame = self.frame_queue.get(block=True)
+                    if first_frame is None:
+                        print("🛑 Received stop signal before first frame.")
+                        return
+                    
+                    # Format conversion
+                    if first_frame.dtype != np.uint8:
+                        first_frame = (np.clip(first_frame, 0, 1) * 255).astype(np.uint8)
+                    
+                    # Debug info
+                    print(f"🎬 First frame: shape={first_frame.shape}, dtype={first_frame.dtype}, "
+                          f"min={first_frame.min()}, max={first_frame.max()}")
+                    
+                    yield first_frame
+                    
+                except Exception as e:
+                    print(f"❌ Error waiting for first frame: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return
+
+                last_yielded_frame = first_frame
+                frame_count = 1
+
                 while self.running:
                     try:
-                        # Try to get new frame from queue (non-blocking)
-                        frame = self.frame_queue.get(timeout=0.1)
-                        if frame is not None:
-                            self.video_buffer.append(frame.copy())
-                            # Convert to uint8 for display
-                            if frame.dtype != np.uint8:
-                                frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
-                            frame_count += 1
-                            yield frame
+                        # Long timeout to avoid frequent keep-alive triggers
+                        frame = self.frame_queue.get(timeout=frame_timeout)
+                        if frame is None:  # Stop signal
+                            print(f"🛑 Gradio stream received stop signal after {frame_count} frames.")
+                            break
+                        
+                        # Format conversion
+                        if frame.dtype != np.uint8:
+                            frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
+                        
+                        last_yielded_frame = frame
+                        frame_count += 1
+                        
+                        if frame_count % 10 == 0:
+                            print(f"🎬 Yielded {frame_count} frames")
+                        
+                        yield frame
+                        
                     except queue.Empty:
-                        # No new frames, loop existing buffer
-                        if self.video_buffer:
-                            idx = self.current_frame_idx % len(self.video_buffer)
-                            frame = self.video_buffer[idx]
-                            self.current_frame_idx += 1
-                            # Convert to uint8 for display
-                            if frame.dtype != np.uint8:
-                                frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
-                            yield frame
-                        else:
-                            # Yield black frame while waiting
-                            yield np.zeros((height, width, 3), dtype=np.uint8)
-                    
-                    time.sleep(1.0/fps)
+                        # No new frame after timeout, yield last frame for keep-alive
+                        print(f"⏱️  No new frame for {frame_timeout}s, holding last frame...")
+                        yield last_yielded_frame
+                        time.sleep(1.0/fps)
             
-            # Dummy input to trigger streaming
-            start_btn = gr.Button("Start Streaming", visible=False)
-            start_btn.click(fn=frame_generator, outputs=image_display)
-            
-            # Auto-start on load
-            demo.load(fn=lambda: None, outputs=start_btn)
+            # Auto-start streaming on page load
+            demo.load(fn=frame_generator, outputs=image_display)
         
         self.stream = demo
         
@@ -150,7 +176,8 @@ class GradioStreamingBackend(StreamingBackend):
         x = x.cpu().numpy()
         T = x.shape[0]
         
-        print(f"📤 Streaming {T} frames (buffer size: {len(self.video_buffer)})")
+        # Debug: check actual frame data
+        print(f"📤 Streaming {T} frames: dtype={x.dtype}, min={x.min():.4f}, max={x.max():.4f}")
 
         for i in range(T):
             frame = x[i]
