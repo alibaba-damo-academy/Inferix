@@ -1,10 +1,11 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 from contextlib import contextmanager
 
 import torch
 
 from inferix.models.self_forcing import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 from inferix.core.memory.utils import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller, move_model_to_device_with_memory_preservation
+from inferix.core.types import DecodeMode
 from inferix.models.wan_base import ParallelConfig
 from inferix.kvcache_manager.kvcache_manager import KVCacheRequest, KVCacheManager
 
@@ -114,8 +115,10 @@ class CausalInferencePipeline(torch.nn.Module):
         return_latents: bool = False,
         profile: bool = False,
         low_memory: bool = False,
+        free_cache_before_vae: bool = True,
+        decode_mode: DecodeMode = DecodeMode.AFTER_ALL,
         block_callback: Optional[callable] = None,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, tuple]:
         """
         Perform inference on the given noise and text prompts.
         Inputs:
@@ -127,6 +130,13 @@ class CausalInferencePipeline(torch.nn.Module):
                 If num_input_frames is 1, perform image to video.
                 If num_input_frames is greater than 1, perform video extension.
             return_latents (bool): Whether to return the latents.
+            free_cache_before_vae (bool): Whether to free KV cache before VAE decoding.
+                Default True to save VRAM on memory-constrained GPUs (e.g., 16GB).
+                Set False to keep KV cache for faster multi-prompt inference.
+            decode_mode (DecodeMode): VAE decoding strategy.
+                - AFTER_ALL: Decode after all latents generated (default)
+                - PER_BLOCK: Reserved for streaming (handled by block_callback)
+                - NO_DECODE: Return latent only, skip VAE decode
             block_callback (Optional[callable]): Callback function called after each block generation.
                                                 Receives (block_latent, block_index) for progressive streaming.
         Outputs:
@@ -376,7 +386,21 @@ class CausalInferencePipeline(torch.nn.Module):
                     block_latent = output[:, current_start_frame - current_num_frames:current_start_frame]
                     block_callback(block_latent, block_index)
 
-        # Step 4: Decode the output
+        # Step 4: Optionally free KV cache before VAE decoding to save VRAM
+        # KV cache is no longer needed after diffusion generation
+        # Default True for memory-constrained scenarios (e.g., 16GB VRAM)
+        if free_cache_before_vae:
+            self.clear_cache(kv_cache_manager, kv_cache_requests)
+            torch.cuda.empty_cache()
+        
+        # Step 5: Decode the output (based on decode_mode)
+        if decode_mode == DecodeMode.NO_DECODE:
+            # Skip VAE decoding, return latent only
+            if profile:
+                events = perf_profiler.get_results()
+                print(f"Profiling (latent only): diffusion={events.get('diffusion_generation', 0):.2f}ms")
+            return (output, output) if return_latents else output
+        
         with perf_profiler.stage("vae_decoding"):
             video = self.vae.decode_to_pixel(output, use_cache=False)
             video = (video * 0.5 + 0.5).clamp(0, 1)

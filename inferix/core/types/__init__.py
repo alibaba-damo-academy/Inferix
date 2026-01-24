@@ -5,6 +5,8 @@ from .inference import (
     PackedCrossAttnParams,
     ModelMetaArgs,
     InferenceParams,
+    DecodeMode,
+    MemoryMode,
 )
 
 __all__ = [
@@ -12,4 +14,6 @@ __all__ = [
     "PackedCrossAttnParams", 
     "ModelMetaArgs",
     "InferenceParams",
+    "DecodeMode",
+    "MemoryMode",
 ]

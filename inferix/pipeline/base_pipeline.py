@@ -6,6 +6,7 @@ import torch
 # Profiling imports - profiling is a core module and should always be available
 from ..profiling.profiler import InferixProfiler
 from ..profiling.config import ProfilingConfig
+from ..core.types import DecodeMode, MemoryMode
 
 
 class AbstractInferencePipeline(ABC):
@@ -567,3 +568,71 @@ class AbstractInferencePipeline(ABC):
         """
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+    
+    def _apply_memory_mode(self, mode: MemoryMode):
+        """
+        Apply memory management strategy.
+        
+        Args:
+            mode: Memory management mode (AGGRESSIVE, BALANCED, RELAXED)
+        """
+        if mode == MemoryMode.AGGRESSIVE:
+            # Free cache before VAE, smaller chunks
+            self._free_cache_before_vae = True
+            self._vae_chunk_size = 2
+        elif mode == MemoryMode.RELAXED:
+            # Keep cache for reuse, larger chunks
+            self._free_cache_before_vae = False
+            self._vae_chunk_size = 7
+        else:  # BALANCED
+            self._free_cache_before_vae = True
+            self._vae_chunk_size = 4
+    
+    def _decode_latent(
+        self,
+        latent: torch.Tensor,
+        vae,
+        decode_mode: DecodeMode = DecodeMode.AFTER_ALL,
+        chunk_size: int = 2,
+        stream_callback: Optional[Callable[[torch.Tensor], None]] = None,
+        block_size: int = 3,
+    ) -> Optional[torch.Tensor]:
+        """
+        Framework-level VAE decoding with strategy support.
+        
+        Args:
+            latent: Latent tensor [B, T, C, H, W]
+            vae: VAE model with decode_to_pixel method
+            decode_mode: Decoding strategy
+            chunk_size: Frames per VAE decode chunk
+            stream_callback: Callback for streaming decoded frames
+            block_size: Model's block size for PER_BLOCK mode
+        
+        Returns:
+            Decoded video tensor, or None if NO_DECODE
+        """
+        if decode_mode == DecodeMode.NO_DECODE:
+            return None
+        
+        if decode_mode == DecodeMode.AFTER_ALL:
+            # Decode all at once (with chunking for memory)
+            video = vae.decode_to_pixel(latent, use_cache=False, chunk_size=chunk_size)
+            video = (video * 0.5 + 0.5).clamp(0, 1)
+            return video
+        
+        if decode_mode == DecodeMode.PER_BLOCK:
+            # Decode per block, stream immediately
+            num_frames = latent.shape[1]
+            videos = []
+            for start in range(0, num_frames, block_size):
+                end = min(start + block_size, num_frames)
+                block_latent = latent[:, start:end]
+                block_video = vae.decode_to_pixel(block_latent, use_cache=False, chunk_size=block_size)
+                block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
+                if stream_callback:
+                    stream_callback(block_video)
+                videos.append(block_video)
+                torch.cuda.empty_cache()
+            return torch.cat(videos, dim=1)
+        
+        return None

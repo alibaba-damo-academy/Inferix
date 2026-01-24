@@ -1,10 +1,25 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, Optional
 
 import numpy as np
 import torch
 
 from inferix.kvcache_manager.kvcache_manager import KVCacheManager, KVCacheRequest
+
+
+class DecodeMode(Enum):
+    """VAE decoding timing strategy."""
+    AFTER_ALL = "after_all"      # Decode after all latents generated (default)
+    PER_BLOCK = "per_block"      # Decode per block (streaming/low memory)
+    NO_DECODE = "no_decode"      # Return latent only, no VAE decode
+
+
+class MemoryMode(Enum):
+    """Memory management strategy."""
+    AGGRESSIVE = "aggressive"    # Free cache aggressively (16GB VRAM)
+    BALANCED = "balanced"        # Balanced (default)
+    RELAXED = "relaxed"          # Keep cache for reuse (24GB+ VRAM)
 
 @dataclass(frozen=True)
 class PackedCoreAttnParams:
