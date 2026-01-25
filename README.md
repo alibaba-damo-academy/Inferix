@@ -40,6 +40,20 @@ Therefore, **Inferix** is specifically designed as a next-generation inference e
     <img src="assets/figure_2.png" alt="Framework Architecture" width="80%"/>
 </p>
 
+## 🧩 Semi-AR Decode Architecture
+
+Inferix separates **semi-autoregressive diffusion blocks** from **VAE decoding**, and exposes a small set of configurable modes:
+
+- **Diffusion blocks (block size)**: Model-level generation units (e.g., 3 frames/block in Self-Forcing) that control KV Cache updates and semi-autoregressive behavior.
+- **VAE chunks (chunk size)**: Temporal slices used only inside the VAE to bound peak VRAM during decoding.
+- **Decode timing modes**:
+  - `AFTER_ALL`: Decode after all diffusion blocks are generated (offline / batch usage).
+  - `PER_BLOCK`: Decode each block as soon as it is ready (used by progressive streaming APIs).
+  - `NO_DECODE`: Skip decoding and operate on latents only (advanced/integration scenarios).
+- **Memory strategy**: KV Cache can be freed before VAE decoding on memory-constrained GPUs, and VAE chunk size can be tuned to trade latency for peak memory.
+
+For end-to-end progressive streaming usage and recommended settings on a single GPU, see the [streaming example](example/streaming/README.md).
+
 ## 🗓️ Roadmap
 
 ### Framework Enhancements

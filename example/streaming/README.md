@@ -136,9 +136,10 @@ streamer.disconnect()
 **Key Points**:
 - **Blocks** enable progressive streaming (see frames earlier)
 - **Segments** enable memory management (avoid OOM for long videos)
-- Both work together automatically in `run_streaming_generation()`
+- **VAE decoding** operates on final latents and is independent from KV cache
+- **Chunked decoding**: VAE decodes frames in small temporal chunks to reduce peak VRAM
 
----
+> Note: For a framework-level overview of semi-autoregressive blocks, VAE decoding, and decode/memory modes, please refer to the main [Inferix README](../../README.md). This document focuses on how to use streaming for the Self-Forcing example.
 
 ## Progressive Streaming API
 

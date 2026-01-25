@@ -600,13 +600,19 @@ class AbstractInferencePipeline(ABC):
         """
         Framework-level VAE decoding with strategy support.
         
+        NOTE: block_size vs chunk_size
+        - block_size: Model's generation unit (e.g., 3 frames for Self-Forcing)
+                     Used to split latent for progressive decoding
+        - chunk_size: VAE's internal decode batch size (e.g., 2 frames)
+                     Used within VAE to reduce peak memory
+        
         Args:
             latent: Latent tensor [B, T, C, H, W]
             vae: VAE model with decode_to_pixel method
             decode_mode: Decoding strategy
-            chunk_size: Frames per VAE decode chunk
+            chunk_size: Frames per VAE internal decode batch (memory optimization)
             stream_callback: Callback for streaming decoded frames
-            block_size: Model's block size for PER_BLOCK mode
+            block_size: Model's block size for PER_BLOCK mode (generation unit)
         
         Returns:
             Decoded video tensor, or None if NO_DECODE
@@ -615,19 +621,20 @@ class AbstractInferencePipeline(ABC):
             return None
         
         if decode_mode == DecodeMode.AFTER_ALL:
-            # Decode all at once (with chunking for memory)
+            # Decode all at once (VAE internally chunks by chunk_size)
             video = vae.decode_to_pixel(latent, use_cache=False, chunk_size=chunk_size)
             video = (video * 0.5 + 0.5).clamp(0, 1)
             return video
         
         if decode_mode == DecodeMode.PER_BLOCK:
-            # Decode per block, stream immediately
+            # Decode per block (split by block_size, each block decoded with chunk_size)
             num_frames = latent.shape[1]
             videos = []
             for start in range(0, num_frames, block_size):
                 end = min(start + block_size, num_frames)
                 block_latent = latent[:, start:end]
-                block_video = vae.decode_to_pixel(block_latent, use_cache=False, chunk_size=block_size)
+                # VAE decodes this block using chunk_size internally
+                block_video = vae.decode_to_pixel(block_latent, use_cache=False, chunk_size=chunk_size)
                 block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
                 if stream_callback:
                     stream_callback(block_video)
