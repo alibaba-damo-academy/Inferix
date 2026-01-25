@@ -100,7 +100,7 @@ class CausalInferencePipeline(torch.nn.Module):
         self.local_attn_size = self.generator.model.local_attn_size
 
         if self.parallel_config.rank == 0:
-            print(f"KV inference with {self.num_frame_per_block} frames per block")
+            pass  # Block size info is printed in generation config summary
 
         if self.num_frame_per_block > 1:
             self.generator.model.num_frame_per_block = self.num_frame_per_block
@@ -117,6 +117,7 @@ class CausalInferencePipeline(torch.nn.Module):
         low_memory: bool = False,
         free_cache_before_vae: bool = True,
         decode_mode: DecodeMode = DecodeMode.AFTER_ALL,
+        vae_chunk_size: Optional[int] = None,
         block_callback: Optional[callable] = None,
     ) -> Union[torch.Tensor, tuple]:
         """
@@ -137,6 +138,8 @@ class CausalInferencePipeline(torch.nn.Module):
                 - AFTER_ALL: Decode after all latents generated (default)
                 - PER_BLOCK: Reserved for streaming (handled by block_callback)
                 - NO_DECODE: Return latent only, skip VAE decode
+            vae_chunk_size (Optional[int]): VAE decode chunk size. 
+                None = use default (2 frames). Smaller = less memory, slower.
             block_callback (Optional[callable]): Callback function called after each block generation.
                                                 Receives (block_latent, block_index) for progressive streaming.
         Outputs:
@@ -402,7 +405,9 @@ class CausalInferencePipeline(torch.nn.Module):
             return (output, output) if return_latents else output
         
         with perf_profiler.stage("vae_decoding"):
-            video = self.vae.decode_to_pixel(output, use_cache=False)
+            # Use provided chunk_size or default to 2
+            chunk_size = vae_chunk_size if vae_chunk_size is not None else 2
+            video = self.vae.decode_to_pixel(output, use_cache=False, chunk_size=chunk_size)
             video = (video * 0.5 + 0.5).clamp(0, 1)
 
         # Print profiling results if enabled

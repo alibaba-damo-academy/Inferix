@@ -34,6 +34,12 @@ def parse_arguments():
     parser.add_argument("--ulysses_size", type=int, default=1, help="Size of Ulysses Parallel")
     parser.add_argument("--ring_size", type=int, default=1, help="Size of Ring Sequence Parallel")
     parser.add_argument("--enable_profiling", action="store_true", help="Whether to enable profiling")
+    # Memory optimization arguments
+    parser.add_argument("--memory_mode", type=str, default=None,
+                        choices=["aggressive", "balanced", "relaxed"],
+                        help="Memory mode preset (overrides config file)")
+    parser.add_argument("--vae_chunk_size", type=int, default=None,
+                        help="VAE decode chunk size (overrides memory_mode preset)")
     return parser.parse_args()
 
 
@@ -89,11 +95,18 @@ def main():
         parallel_config=parallel_config,
     )
     
+    # Override memory config from command line if specified
+    # Priority: command line > config file > default
+    if args.memory_mode:
+        pipeline._memory_mode = args.memory_mode
+    if args.vae_chunk_size is not None:
+        pipeline._vae_chunk_size = args.vae_chunk_size
+    
     # Load checkpoint
     pipeline.load_checkpoint(args.checkpoint_path, use_ema=args.use_ema)
     
     # Set device
-    pipeline.setup_devices(low_memory=low_memory)
+    pipeline.setup_devices(low_memory=low_memory, verbose=True)
     
     # Parse prompts
     prompts = [p.strip() for p in args.prompt.split(';') if p.strip()]

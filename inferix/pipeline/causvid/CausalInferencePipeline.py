@@ -91,13 +91,15 @@ class CausalInferencePipeline(torch.nn.Module):
         self.is_kv_cache_initialized = False
 
     
-    def inference(self, noise: torch.Tensor, text_prompts: List[str], start_latents: Optional[torch.Tensor], return_latents: bool = True, kv_cache_manager: Optional[KVCacheManager] = None, kv_cache_requests: Optional[List] = None) -> torch.Tensor:
+    def inference(self, noise: torch.Tensor, text_prompts: List[str], start_latents: Optional[torch.Tensor], return_latents: bool = True, kv_cache_manager: Optional[KVCacheManager] = None, kv_cache_requests: Optional[List] = None, vae_chunk_size: Optional[int] = None) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
         Inputs:
             noise (torch.Tensor): The input noise tensor of shape
                 (batch_size, num_frames, num_channels, height, width).
             text_prompts (List[str]): The list of text prompts.
+            vae_chunk_size (Optional[int]): VAE decode chunk size. 
+                None = use default (2 frames). Smaller = less memory, slower.
         Outputs:
             video (torch.Tensor): The generated video tensor of shape
                 (batch_size, num_frames, num_channels, height, width). It is normalized to be in the range [0, 1].
@@ -240,7 +242,9 @@ class CausalInferencePipeline(torch.nn.Module):
                 raise RuntimeError(f"denoised_pred or timestep is None after denoising loop for block {block_index}")
 
         # Step 3: Decode the output
-        video = self.vae.decode_to_pixel(output)
+        # Use provided chunk_size or default to 2
+        chunk_size = vae_chunk_size if vae_chunk_size is not None else 2
+        video = self.vae.decode_to_pixel(output, chunk_size=chunk_size)
         video = (video * 0.5 + 0.5).clamp(0, 1)
 
         if dist.is_initialized():

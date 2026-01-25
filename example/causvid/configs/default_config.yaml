@@ -52,3 +52,9 @@ gradient_checkpointing: true
 backward_simulation: false
 num_frame_per_block: 3
 warp_denoising_step: false
+
+# Memory optimization (framework-level)
+# memory_mode: aggressive/balanced/relaxed (default: balanced)
+# vae_chunk_size: override chunk size, null means use memory_mode preset
+memory_mode: balanced
+vae_chunk_size: null

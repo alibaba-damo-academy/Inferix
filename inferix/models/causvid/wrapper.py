@@ -94,7 +94,9 @@ class WanVAEWrapper(torch.nn.Module):
         output = output.permute(0, 2, 1, 3, 4)
         return output
 
-    def decode_to_pixel(self, latent: torch.Tensor, use_cache: bool = False) -> torch.Tensor:
+    def decode_to_pixel(self, latent: torch.Tensor, use_cache: bool = False, chunk_size: int = 2) -> torch.Tensor:
+        # from [batch_size, num_frames, num_channels, height, width]
+        # to [batch_size, num_channels, num_frames, height, width]
         zs = latent.permute(0, 2, 1, 3, 4)
         if use_cache:
             assert latent.shape[0] == 1, "Batch size must be 1 when using cache"
@@ -109,8 +111,33 @@ class WanVAEWrapper(torch.nn.Module):
             decode_function = self.model.decode
 
         output = []
-        for u in zs:
-            output.append(decode_function(u.unsqueeze(0), scale).float().clamp_(-1, 1).squeeze(0))
+        # Decode in chunks to reduce peak memory usage
+        # Process each batch independently
+        for batch_idx, u in enumerate(zs):
+            batch_chunks = []
+            num_frames = u.shape[1]  # u: [C, T, H, W]
+            
+            # Split temporal dimension into chunks
+            for chunk_start in range(0, num_frames, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, num_frames)
+                # Extract chunk along temporal axis: [C, chunk_size, H, W]
+                frame_chunk = u[:, chunk_start:chunk_end, :, :]
+                
+                # Decode this chunk
+                decoded_chunk = decode_function(frame_chunk.unsqueeze(0), scale).float().clamp_(-1, 1).squeeze(0)
+                batch_chunks.append(decoded_chunk)
+                
+                # Clear VAE internal cache after each chunk to free memory
+                self.model.clear_cache()
+                
+                # Clear GPU cache after each chunk (only affects GPU allocator, not data)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # Concatenate chunks for this batch: [C, T, H, W]
+            batch_output = torch.cat(batch_chunks, dim=1)
+            output.append(batch_output)
+        
         output = torch.stack(output, dim=0)
         # from [batch_size, num_channels, num_frames, height, width]
         # to [batch_size, num_frames, num_channels, height, width]

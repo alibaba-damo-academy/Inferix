@@ -409,6 +409,15 @@ class AbstractInferencePipeline(ABC):
             - Segment-level looping is handled by this framework method
             - For long video testing, use num_segments=10-20
         """
+        # Print generation configuration summary
+        self._print_generation_config(
+            num_prompts=len(prompts),
+            num_segments=num_segments,
+            segment_length=segment_length,
+            overlap_frames=overlap_frames,
+            **kwargs
+        )
+        
         print(f"[Streaming] Starting generation: {num_segments} segment(s) × {segment_length} frames")
         
         all_videos = []
@@ -569,24 +578,120 @@ class AbstractInferencePipeline(ABC):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     
-    def _apply_memory_mode(self, mode: MemoryMode):
+    def _print_generation_config(
+        self,
+        num_prompts: int,
+        num_segments: int,
+        segment_length: int,
+        overlap_frames: int = 0,
+        **kwargs
+    ):
+        """
+        Print generation configuration summary before video generation.
+        
+        This method is called by run_streaming_generation() and can be overridden
+        by subclasses to add model-specific configuration details.
+        
+        Args:
+            num_prompts: Number of prompts
+            num_segments: Number of segments to generate
+            segment_length: Frames per segment
+            overlap_frames: Overlapping frames between segments
+            **kwargs: Additional model-specific parameters
+        """
+        # Extract common parameters
+        num_samples = kwargs.get('num_samples', 1)
+        low_memory = kwargs.get('low_memory', False)
+        decode_mode = kwargs.get('decode_mode', 'AFTER_ALL')
+        memory_mode = kwargs.get('memory_mode', 'balanced')
+        chunk_size = kwargs.get('chunk_size', None)
+        
+        # Normalize mode names
+        if hasattr(decode_mode, 'value'):
+            decode_mode = decode_mode.value
+        if hasattr(memory_mode, 'value'):
+            memory_mode = memory_mode.value
+        
+        # Calculate effective chunk_size based on memory_mode if not explicitly set
+        if chunk_size is None:
+            memory_mode_lower = memory_mode.lower() if isinstance(memory_mode, str) else 'balanced'
+            if memory_mode_lower == 'aggressive':
+                effective_chunk_size = 2
+            elif memory_mode_lower == 'relaxed':
+                effective_chunk_size = 7
+            else:  # balanced
+                effective_chunk_size = 4
+        else:
+            effective_chunk_size = chunk_size
+        
+        # Calculate total frames
+        if num_segments > 1:
+            total_frames = num_segments * segment_length - (num_segments - 1) * overlap_frames
+        else:
+            total_frames = segment_length
+        
+        print("\n" + "=" * 60)
+        print("Generation Configuration")
+        print("=" * 60)
+        print(f"Prompts:         {num_prompts}")
+        print(f"Batch Size:      {num_samples}")
+        print(f"Total Frames:    {total_frames} ({num_segments} seg × {segment_length} frames)")
+        if num_segments > 1:
+            print(f"Overlap:         {overlap_frames} frames")
+        
+        # Allow subclasses to add model-specific info
+        self._print_model_specific_config(**kwargs)
+        
+        # Framework-level modes
+        print("-" * 60)
+        print(f"Decode Mode:     {decode_mode}")
+        print(f"Memory Mode:     {memory_mode}")
+        chunk_source = "(preset)" if chunk_size is None else "(custom)"
+        print(f"VAE Chunk Size:  {effective_chunk_size} frames {chunk_source}")
+        if low_memory:
+            print(f"Low Memory:      Enabled")
+        print("=" * 60 + "\n")
+    
+    def _print_model_specific_config(self, **kwargs):
+        """
+        Print model-specific configuration details.
+        
+        Subclasses can override this to add custom configuration info.
+        Default implementation does nothing.
+        
+        Args:
+            **kwargs: Model-specific parameters
+        """
+        pass
+    
+    def _apply_memory_mode(self, mode: MemoryMode, vae_chunk_size: Optional[int] = None):
         """
         Apply memory management strategy.
         
+        MemoryMode provides preset combinations for common scenarios.
+        vae_chunk_size can be explicitly set to override the preset.
+        
+        Priority: explicit vae_chunk_size > MemoryMode preset > default
+        
         Args:
             mode: Memory management mode (AGGRESSIVE, BALANCED, RELAXED)
+            vae_chunk_size: Optional explicit chunk size override
         """
+        # Apply MemoryMode presets
         if mode == MemoryMode.AGGRESSIVE:
-            # Free cache before VAE, smaller chunks
+            # Free cache before VAE, smaller chunks (16GB VRAM)
             self._free_cache_before_vae = True
-            self._vae_chunk_size = 2
+            preset_chunk_size = 2
         elif mode == MemoryMode.RELAXED:
-            # Keep cache for reuse, larger chunks
+            # Keep cache for reuse, larger chunks (24GB+ VRAM)
             self._free_cache_before_vae = False
-            self._vae_chunk_size = 7
+            preset_chunk_size = 7
         else:  # BALANCED
             self._free_cache_before_vae = True
-            self._vae_chunk_size = 4
+            preset_chunk_size = 4
+        
+        # Allow explicit override
+        self._vae_chunk_size = vae_chunk_size if vae_chunk_size is not None else preset_chunk_size
     
     def _decode_latent(
         self,

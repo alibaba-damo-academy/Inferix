@@ -29,6 +29,12 @@ def parse_arguments():
     parser.add_argument("--diff_prompt", type=bool, default=False, help="Different chunk have different prompt")
     parser.add_argument("--is_interactive", type=bool, default=False, help="Get prompt from shell when diff_prompt is true")
     parser.add_argument("--diff_prompt_file", type=str, default=None, help="Load prompts from file when diff_prompt is true")
+    # Memory optimization arguments
+    parser.add_argument("--memory_mode", type=str, default=None,
+                        choices=["aggressive", "balanced", "relaxed"],
+                        help="Memory mode preset (overrides config file)")
+    parser.add_argument("--vae_chunk_size", type=int, default=None,
+                        help="VAE decode chunk size (overrides memory_mode preset)")
 
     return parser.parse_args()
 
@@ -108,6 +114,13 @@ def main():
         enable_kv_offload=args.enable_kv_offload,
         parallel_config = parallel_config
     )
+    
+    # Override memory config from command line if specified
+    # Priority: command line > config file > default
+    if args.memory_mode:
+        pipeline._memory_mode = args.memory_mode
+    if args.vae_chunk_size is not None:
+        pipeline._vae_chunk_size = args.vae_chunk_size
     
     # Load checkpoint
     pipeline.load_checkpoint(args.checkpoint_folder)

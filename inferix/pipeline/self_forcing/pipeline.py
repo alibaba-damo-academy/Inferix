@@ -47,6 +47,10 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
         self.parallel_config = parallel_config or ParallelConfig()
         
+        # Read memory optimization config
+        self._memory_mode = getattr(config, 'memory_mode', 'balanced')
+        self._vae_chunk_size = getattr(config, 'vae_chunk_size', None)  # None = use memory_mode preset
+        
         # Initialize pipeline
         self._initialize_pipeline()
         
@@ -296,6 +300,19 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         local_rank = self.parallel_config.local_rank
         rank = self.parallel_config.rank
         
+        # Print generation configuration summary (only rank 0)
+        if rank == 0:
+            self._print_generation_config(
+                num_prompts=len(prompts),
+                num_segments=1,
+                segment_length=num_output_frames,
+                overlap_frames=0,
+                num_samples=num_samples,
+                low_memory=low_memory,
+                memory_mode=self._memory_mode,
+                chunk_size=self._vae_chunk_size,
+            )
+        
         # Record model parameters if profiling is enabled
         if self._profiling_enabled and self._profiler is not None:
             # Record generator model parameters
@@ -358,6 +375,7 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                     kv_cache_manager=kv_cache_manager,
                     kv_cache_requests=kv_cache_requests,
                     low_memory=low_memory,
+                    vae_chunk_size=self._vae_chunk_size,
                     profile=self._profiling_enabled
                 )
             else:
@@ -418,6 +436,30 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                         
                 output_path = os.path.join(output_folder, filename)
                 write_video(output_path, video_255[sample_idx], fps=16)
+    
+    def _print_model_specific_config(self, **kwargs):
+        """
+        Override base method to add Self-Forcing specific configuration.
+        
+        Args:
+            **kwargs: Model-specific parameters
+        """
+        # Print Self-Forcing method info
+        block_size = self.pipeline.num_frame_per_block
+        print(f"Method:          Self-Forcing")
+        print(f"Block Size:      {block_size} frames/block")
+        
+        # Print segment info
+        segment_length = kwargs.get('segment_length', 21)
+        num_segments = kwargs.get('num_segments', 1)
+        blocks_per_segment = segment_length // block_size
+        print(f"Segment Size:    {segment_length} frames/segment ({blocks_per_segment} blocks)")
+        print(f"Num Segments:    {num_segments}")
+        
+        # Print scheduler info if available
+        if hasattr(self.pipeline, 'denoising_step_list'):
+            num_steps = len(self.pipeline.denoising_step_list)
+            print(f"Denoising Steps: {num_steps}")
     
     def _generate_segment_with_streaming(
         self,

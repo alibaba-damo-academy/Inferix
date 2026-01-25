@@ -50,6 +50,10 @@ class CausVidPipeline(AbstractInferencePipeline):
         self.wan_base_model_path = wan_base_model_path
         self.enable_kv_offload = enable_kv_offload
         
+        # Read memory optimization config
+        self._memory_mode = getattr(self.config, 'memory_mode', 'balanced')
+        self._vae_chunk_size = getattr(self.config, 'vae_chunk_size', None)  # None = use memory_mode preset
+        
         # Initialize pipeline
         self._initialize_pipeline()
     
@@ -101,6 +105,23 @@ class CausVidPipeline(AbstractInferencePipeline):
             self.pipeline.text_encoder.to(device=gpu)
                 
         self.pipeline.vae.to(device=gpu)
+    
+    def _print_model_specific_config(self, **kwargs):
+        """
+        Override base method to add CausVid specific configuration.
+        
+        Args:
+            **kwargs: Model-specific parameters
+        """
+        # Print CausVid method info
+        print(f"Method:          CausVid")
+        print(f"Block Size:      {self.pipeline.num_frame_per_block} frames/block")
+        
+        # Print segment info
+        num_segments = kwargs.get('num_rollout', 3)
+        frames_per_segment = 21
+        print(f"Segment Size:    {frames_per_segment} frames/segment (7 blocks)")
+        print(f"Num Segments:    {num_segments}")
 
     def run_text_to_video(
             self,
@@ -113,6 +134,23 @@ class CausVidPipeline(AbstractInferencePipeline):
             **kwargs
         ) -> Optional[str]:
         """[Implementation of abstract method] Run text-to-video generation"""
+        
+        # Print generation configuration summary
+        rank = self.parallel_config.rank if self.parallel_config else 0
+        if rank == 0:
+            # Calculate total frames: num_rollout segments × 21 frames, with overlap
+            frames_per_segment = 21
+            total_frames = num_rollout * frames_per_segment - (num_rollout - 1) * num_overlap_frames
+            self._print_generation_config(
+                num_prompts=len(prompts),
+                num_segments=num_rollout,
+                segment_length=frames_per_segment,
+                overlap_frames=num_overlap_frames,
+                num_samples=1,
+                memory_mode=self._memory_mode,
+                chunk_size=self._vae_chunk_size,
+                num_rollout=num_rollout,
+            )
         
         # If output_folder is not provided, use the default value
         if output_folder is None:
@@ -156,16 +194,16 @@ class CausVidPipeline(AbstractInferencePipeline):
             kv_cache_manager: Optional[KVCacheManager] = None,
             **kwargs
         ):
-        """Inference when all of the chunks share same prompt"""
+        """Inference when all segments share same prompt"""
 
         for prompt_idx, prompt in enumerate(prompts):
             kv_cache_request = KVCacheRequest(prompt)
             kv_cache_requests = [kv_cache_request]
             start_latents = None
             all_video = []
-            # Execute multi-round generation
-            for rollout_index in range(num_rollout):
-                start_latents = self._generate_one_chunk(
+            # Execute multi-segment generation
+            for segment_index in range(num_rollout):
+                start_latents = self._generate_one_segment(
                     prompt, 
                     start_latents, 
                     all_video,
@@ -192,24 +230,24 @@ class CausVidPipeline(AbstractInferencePipeline):
             is_interactive: bool = False,
             **kwargs
         ) -> Optional[str]:
-        """Inference when different chunk has different prompt"""
+        """Inference when different segment has different prompt"""
 
-        chunk_id = 0
+        segment_id = 0
         start_latents = None
         all_video = []
         while True:
             if is_interactive:
-                prompt = get_prompt_from_shell(chunk_id)
+                prompt = get_prompt_from_shell(segment_id)
             else:
-                prompt = prompts[chunk_id] if chunk_id < len(prompts) else "Quit"
+                prompt = prompts[segment_id] if segment_id < len(prompts) else "Quit"
             
             if prompt == "Quit":
                 break
-            chunk_id += 1
+            segment_id += 1
             kv_cache_request = KVCacheRequest(prompt)
             kv_cache_requests = [kv_cache_request]
             
-            start_latents = self._generate_one_chunk(
+            start_latents = self._generate_one_segment(
                 prompt,
                 start_latents,
                 all_video,
@@ -228,7 +266,7 @@ class CausVidPipeline(AbstractInferencePipeline):
 
         return result
     
-    def _generate_one_chunk(
+    def _generate_one_segment(
             self,
             prompt: str,
             start_latents: torch.tensor,
@@ -237,7 +275,7 @@ class CausVidPipeline(AbstractInferencePipeline):
             kv_cache_requests: List,
             kv_cache_manager: Optional[KVCacheManager] = None
         ):
-        """Generate video for one chunk"""
+        """Generate video for one segment (21 frames = 7 blocks)"""
 
         sampled_noise = torch.randn(
             [1, 21, 16, 60, 104], 
@@ -252,6 +290,7 @@ class CausVidPipeline(AbstractInferencePipeline):
             start_latents=start_latents,
             kv_cache_manager=kv_cache_manager,
             kv_cache_requests=kv_cache_requests,
+            vae_chunk_size=self._vae_chunk_size,
         )
         
         current_video = video[0].permute(0, 2, 3, 1).cpu().numpy()
@@ -320,13 +359,13 @@ class CausVidPipeline(AbstractInferencePipeline):
         )
 
 
-def get_prompt_from_shell(chunk_id):
+def get_prompt_from_shell(segment_id):
     """Input prompt from shell"""
     rank = int(os.environ["RANK"])
     gpu = get_gpu()
     # Only input in rank 0
     if rank == 0:
-        prompt = input(f"> Please give prompt for chunk {chunk_id}. [You can input Quit to abort]:")
+        prompt = input(f"> Please give prompt for segment {segment_id}. [You can input Quit to abort]:")
         prompt_tensor = torch.tensor([ord(c) for c in prompt], dtype=torch.uint8, device=gpu)
         prompt_len = torch.tensor(len(prompt_tensor), dtype=torch.long, device=gpu)
     else:
