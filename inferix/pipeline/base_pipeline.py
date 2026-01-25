@@ -124,7 +124,7 @@ class AbstractInferencePipeline(ABC):
         """
         pass
     
-    def setup_devices(self, low_memory: bool = False):
+    def setup_devices(self, low_memory: bool = False, verbose: bool = False):
         """
         [Template Method] Setup devices with meta device optimization.
         
@@ -137,6 +137,7 @@ class AbstractInferencePipeline(ABC):
         
         Args:
             low_memory (bool): Enable CPU offloading for memory-constrained GPUs.
+            verbose (bool): Enable detailed memory usage logs during loading.
         """
         import gc
         import torch
@@ -144,17 +145,23 @@ class AbstractInferencePipeline(ABC):
         
         gpu = get_gpu()
         checkpoint = getattr(self, '_checkpoint_state_dict', None)
-        print(f"Initial GPU memory: {get_cuda_free_memory_gb(gpu):.2f} GB free")
+        
+        # Show memory info only in verbose/low_memory mode
+        log_memory = verbose or low_memory
+        if log_memory:
+            print(f"Initial GPU memory: {get_cuda_free_memory_gb(gpu):.2f} GB free")
         
         # Get model components from subclass
         model_components = self._get_model_components()
         
         for name, model in model_components.items():
-            print(f"Loading {name}...")
+            if log_memory:
+                print(f"Loading {name}...")
             self._materialize_and_load(model, name, gpu, checkpoint, low_memory)
             torch.cuda.empty_cache()
             gc.collect()
-            print(f"After {name}: {get_cuda_free_memory_gb(gpu):.2f} GB free")
+            if log_memory:
+                print(f"After {name}: {get_cuda_free_memory_gb(gpu):.2f} GB free")
         
         print("✅ All models loaded successfully")
     
@@ -198,14 +205,10 @@ class AbstractInferencePipeline(ABC):
         # Wrap entire setup process with profiling context
         with self._get_profiler_context("pipeline_setup"):
             if self._is_setup:
-                print(f"{self.__class__.__name__} is already set up.")
                 return
 
-            print(f"Setting up {self.__class__.__name__}...")
             self._initialize_pipeline()
-            
             self._is_setup = True
-            print("Setup complete.")
 
     @abstractmethod
     def run_text_to_video(self, prompts: List[str], **kwargs) -> Any:
@@ -287,7 +290,6 @@ class AbstractInferencePipeline(ABC):
         # Wrap entire __call__ process with profiling context
         with self._get_profiler_context("pipeline_call"):
             if not self._is_setup:
-                print("Setup has not been called. Calling it now...")
                 self.setup()
             
             # Pass kwargs as inputs dict to run method
@@ -407,7 +409,7 @@ class AbstractInferencePipeline(ABC):
             - Segment-level looping is handled by this framework method
             - For long video testing, use num_segments=10-20
         """
-        print(f"Starting streaming generation: {num_segments} segment(s), {segment_length} frames each")
+        print(f"[Streaming] Starting generation: {num_segments} segment(s) × {segment_length} frames")
         
         all_videos = []
         initial_latent = None
@@ -416,7 +418,7 @@ class AbstractInferencePipeline(ABC):
             # Use cyclic prompts if there are fewer prompts than segments
             current_prompt = prompts[segment_idx % len(prompts)]
             
-            print(f"Generating segment {segment_idx + 1}/{num_segments}...")
+            print(f"[Streaming] Segment {segment_idx + 1}/{num_segments}...")
             
             # Call subclass implementation for single segment generation
             video_segment, final_latent = self._generate_segment_with_streaming(
@@ -435,8 +437,6 @@ class AbstractInferencePipeline(ABC):
             
             # Clean up memory between segments
             self._cleanup_segment_memory()
-            
-            print(f"✅ Segment {segment_idx + 1}/{num_segments} completed")
         
         print(f"✅ Streaming generation completed: {num_segments} segment(s)")
         
