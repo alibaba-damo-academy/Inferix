@@ -406,8 +406,9 @@ class CausalInferencePipeline(torch.nn.Module):
         
         with perf_profiler.stage("vae_decoding"):
             # Use provided chunk_size or default to 2
+            # use_cache=True enables chunked decode with temporal continuity for memory efficiency
             chunk_size = vae_chunk_size if vae_chunk_size is not None else 2
-            video = self.vae.decode_to_pixel(output, use_cache=False, chunk_size=chunk_size)
+            video = self.vae.decode_to_pixel(output, use_cache=True, chunk_size=chunk_size)
             video = (video * 0.5 + 0.5).clamp(0, 1)
 
         # Print profiling results if enabled

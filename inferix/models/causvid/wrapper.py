@@ -95,6 +95,19 @@ class WanVAEWrapper(torch.nn.Module):
         return output
 
     def decode_to_pixel(self, latent: torch.Tensor, use_cache: bool = False, chunk_size: int = 2) -> torch.Tensor:
+        """
+        Decode latent to pixel space with optional chunking for memory efficiency.
+        
+        Args:
+            latent: [B, T, C, H, W] latent tensor
+            use_cache: If True, use cached_decode for temporal continuity across chunks
+            chunk_size: Number of frames per decode chunk (only used when use_cache=True)
+                        When use_cache=False, decode all frames at once for best quality
+        
+        Note:
+            - use_cache=False: Decode all at once, best quality, higher memory
+            - use_cache=True: Chunk-wise decode with temporal cache, lower memory
+        """
         # from [batch_size, num_frames, num_channels, height, width]
         # to [batch_size, num_channels, num_frames, height, width]
         zs = latent.permute(0, 2, 1, 3, 4)
@@ -105,38 +118,42 @@ class WanVAEWrapper(torch.nn.Module):
         scale = [self.mean.to(device=device, dtype=dtype),
                  1.0 / self.std.to(device=device, dtype=dtype)]
 
-        if use_cache:
-            decode_function = self.model.cached_decode
-        else:
-            decode_function = self.model.decode
-
         output = []
-        # Decode in chunks to reduce peak memory usage
-        # Process each batch independently
-        for batch_idx, u in enumerate(zs):
-            batch_chunks = []
-            num_frames = u.shape[1]  # u: [C, T, H, W]
-            
-            # Split temporal dimension into chunks
-            for chunk_start in range(0, num_frames, chunk_size):
-                chunk_end = min(chunk_start + chunk_size, num_frames)
-                # Extract chunk along temporal axis: [C, chunk_size, H, W]
-                frame_chunk = u[:, chunk_start:chunk_end, :, :]
-                
-                # Decode this chunk
-                decoded_chunk = decode_function(frame_chunk.unsqueeze(0), scale).float().clamp_(-1, 1).squeeze(0)
-                batch_chunks.append(decoded_chunk)
-                
-                # Clear VAE internal cache after each chunk to free memory
-                self.model.clear_cache()
-                
-                # Clear GPU cache after each chunk (only affects GPU allocator, not data)
+        
+        if not use_cache:
+            # Decode all frames at once - best quality, no chunk boundary issues
+            # VAE's internal decode() handles frame-by-frame with proper caching
+            for u in zs:
+                decoded = self.model.decode(u.unsqueeze(0), scale).float().clamp_(-1, 1).squeeze(0)
+                output.append(decoded)
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+        else:
+            # Chunk-wise decode with cached_decode for memory efficiency
+            # Clear cache once at start, then maintain cache across chunks
+            self.model.clear_cache()
             
-            # Concatenate chunks for this batch: [C, T, H, W]
-            batch_output = torch.cat(batch_chunks, dim=1)
-            output.append(batch_output)
+            for batch_idx, u in enumerate(zs):
+                batch_chunks = []
+                num_frames = u.shape[1]  # u: [C, T, H, W]
+                
+                # Split temporal dimension into chunks
+                for chunk_start in range(0, num_frames, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, num_frames)
+                    frame_chunk = u[:, chunk_start:chunk_end, :, :]
+                    
+                    # Use cached_decode to maintain temporal continuity
+                    decoded_chunk = self.model.cached_decode(frame_chunk.unsqueeze(0), scale).float().clamp_(-1, 1).squeeze(0)
+                    batch_chunks.append(decoded_chunk)
+                
+                # Concatenate chunks for this batch
+                batch_output = torch.cat(batch_chunks, dim=1)
+                output.append(batch_output)
+                
+                # Clear cache after each batch (not each chunk!)
+                self.model.clear_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         output = torch.stack(output, dim=0)
         # from [batch_size, num_channels, num_frames, height, width]

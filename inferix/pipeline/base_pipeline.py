@@ -726,8 +726,8 @@ class AbstractInferencePipeline(ABC):
             return None
         
         if decode_mode == DecodeMode.AFTER_ALL:
-            # Decode all at once (VAE internally chunks by chunk_size)
-            video = vae.decode_to_pixel(latent, use_cache=False, chunk_size=chunk_size)
+            # Decode all at once with chunked caching for memory efficiency
+            video = vae.decode_to_pixel(latent, use_cache=True, chunk_size=chunk_size)
             video = (video * 0.5 + 0.5).clamp(0, 1)
             return video
         
@@ -738,8 +738,8 @@ class AbstractInferencePipeline(ABC):
             for start in range(0, num_frames, block_size):
                 end = min(start + block_size, num_frames)
                 block_latent = latent[:, start:end]
-                # VAE decodes this block using chunk_size internally
-                block_video = vae.decode_to_pixel(block_latent, use_cache=False, chunk_size=chunk_size)
+                # Each block decoded independently with chunked caching
+                block_video = vae.decode_to_pixel(block_latent, use_cache=True, chunk_size=chunk_size)
                 block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
                 if stream_callback:
                     stream_callback(block_video)
