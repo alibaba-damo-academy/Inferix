@@ -15,6 +15,32 @@ class DecodeMode(Enum):
     NO_DECODE = "no_decode"      # Return latent only, no VAE decode
 
 
+class StreamingMode(Enum):
+    """
+    Streaming strategy for video generation.
+    
+    TRUE_STREAMING: Real streaming with block-by-block VAE decode.
+        - Each block is decoded immediately after diffusion
+        - User sees first frames in ~500ms
+        - Requires KV offload (default enabled) or large VRAM (>=24GB)
+        - Best for interactive generation, low latency requirements
+        
+    DEFERRED_DECODE: Fake streaming, all diffusion first, then VAE decode.
+        - All blocks generated first, then decoded in sequence
+        - User waits until all diffusion completes
+        - Fastest total generation time (no VAE/Diffusion overlap penalty)
+        - Not suitable for interactive generation
+        
+    AUTO: Automatically select based on hardware and configuration.
+        - KV offload enabled + low_memory → TRUE_STREAMING
+        - Large VRAM (>=24GB) → TRUE_STREAMING  
+        - Otherwise → DEFERRED_DECODE
+    """
+    TRUE_STREAMING = "true_streaming"    # Real streaming: decode each block immediately
+    DEFERRED_DECODE = "deferred_decode"  # Fake streaming: decode after all diffusion
+    AUTO = "auto"                        # Auto-select based on hardware
+
+
 class MemoryMode(Enum):
     """Memory management strategy."""
     AGGRESSIVE = "aggressive"    # Free cache aggressively (16GB VRAM)

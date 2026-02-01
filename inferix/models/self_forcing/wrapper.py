@@ -177,11 +177,13 @@ class WanDiffusionWrapper(torch.nn.Module):
             is_causal: bool = False,
             local_attn_size: int = -1,
             sink_size: int = 0,
+            enable_kv_offload: bool = True,
             parallel_config: Optional[ParallelConfig] = None
     ):
         super().__init__()
 
         self.parallel_config = parallel_config
+        self.enable_kv_offload = enable_kv_offload
         if parallel_config is None:
             self.parallel_config = ParallelConfig()
 
@@ -212,6 +214,7 @@ class WanDiffusionWrapper(torch.nn.Module):
                 model_path,
                 local_attn_size=local_attn_size,
                 sink_size=sink_size,
+                enable_kv_offload=self.enable_kv_offload,
                 parallel_config=self.parallel_config)
         else:
             self.model = WanModel.from_pretrained(model_path)

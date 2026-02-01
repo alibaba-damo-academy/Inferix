@@ -640,7 +640,12 @@ class AbstractInferencePipeline(ABC):
             print(f"Overlap:         {overlap_frames} frames")
         
         # Allow subclasses to add model-specific info
-        self._print_model_specific_config(**kwargs)
+        # Pass segment_length and num_segments to subclass
+        self._print_model_specific_config(
+            segment_length=segment_length,
+            num_segments=num_segments,
+            **kwargs
+        )
         
         # Framework-level modes
         print("-" * 60)

@@ -35,6 +35,7 @@ sys.path.insert(0, project_root)
 
 from inferix.pipeline.self_forcing.pipeline import SelfForcingPipeline
 from inferix.core.media import create_streaming_backend
+from inferix.core.types import StreamingMode
 from inferix.profiling import ProfilingConfig
 
 
@@ -75,6 +76,9 @@ def main():
                        help='Enable memory optimization mode')
     parser.add_argument('--use_ema', action='store_true',
                        help='Use EMA weights')
+    parser.add_argument('--streaming_mode', type=str, default='auto',
+                       choices=['auto', 'true_streaming', 'deferred_decode'],
+                       help='Streaming strategy: auto (default), true_streaming (real-time decode), deferred_decode (batch decode)')
     
     # Output options
     parser.add_argument('--output_folder', type=str, default=None,
@@ -100,6 +104,7 @@ def main():
     print("=" * 70)
     print(f"Prompt: {args.prompt}")
     print(f"Backend: {args.streaming_backend.upper()}")
+    print(f"Streaming Mode: {args.streaming_mode.upper()}")
     print(f"Segments: {args.num_segments}")
     print(f"Segment length: {args.segment_length} frames")
     print(f"Overlap: {args.overlap_frames} frames")
@@ -181,6 +186,14 @@ def main():
     print("=" * 70)
     print()
     
+    # Parse streaming mode
+    streaming_mode_map = {
+        'auto': StreamingMode.AUTO,
+        'true_streaming': StreamingMode.TRUE_STREAMING,
+        'deferred_decode': StreamingMode.DEFERRED_DECODE
+    }
+    streaming_mode = streaming_mode_map[args.streaming_mode]
+    
     try:
         video = pipeline.run_streaming_generation(
             prompts=[args.prompt],
@@ -189,7 +202,8 @@ def main():
             segment_length=args.segment_length,
             overlap_frames=args.overlap_frames,
             num_samples=args.num_samples,
-            low_memory=args.low_memory
+            low_memory=args.low_memory,
+            streaming_mode=streaming_mode
         )
         
         print("\n" + "=" * 70)

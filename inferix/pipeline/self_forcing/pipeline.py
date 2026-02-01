@@ -17,6 +17,8 @@ from inferix.core.media import create_streaming_backend
 
 from inferix.pipeline.base_pipeline import AbstractInferencePipeline
 from inferix.profiling.config import ProfilingConfig
+from inferix.core.types import StreamingMode
+from inferix.core.memory.utils import get_cuda_free_memory_gb
 # Import the profiling decorators directly from the decorators module
 from inferix.profiling.decorators import profile_method, profile_session, add_profiling_event
 
@@ -461,6 +463,42 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             num_steps = len(self.pipeline.denoising_step_list)
             print(f"Denoising Steps: {num_steps}")
     
+    def _select_streaming_mode(
+        self, 
+        streaming_mode: StreamingMode,
+        low_memory: bool
+    ) -> StreamingMode:
+        """
+        Select the best streaming mode based on configuration and hardware.
+        
+        TRUE_STREAMING requires Generator + VAE decode to run concurrently on GPU:
+        - Generator weights + activations: ~8.4 GB
+        - VAE decode: ~7.7 GB
+        - Total: ~16.1 GB minimum
+        
+        Therefore TRUE_STREAMING requires >= 20 GB total VRAM for safety margin.
+        
+        Args:
+            streaming_mode: Requested streaming mode (AUTO, TRUE_STREAMING, or DEFERRED_DECODE)
+            low_memory: Whether low memory mode is enabled
+            
+        Returns:
+            The resolved streaming mode to use
+        """
+        if streaming_mode != StreamingMode.AUTO:
+            return streaming_mode
+        
+        # AUTO mode: determine best strategy based on total GPU memory
+        # TRUE_STREAMING requires ~16 GB concurrent usage (Generator + VAE decode)
+        # We use 20 GB as threshold for safety margin
+        total_memory_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024**3)
+        
+        if total_memory_gb >= 20:
+            return StreamingMode.TRUE_STREAMING
+        else:
+            # For 16GB or less, use DEFERRED_DECODE which decodes after diffusion completes
+            return StreamingMode.DEFERRED_DECODE
+    
     def _generate_segment_with_streaming(
         self,
         prompt: str,
@@ -471,6 +509,18 @@ class SelfForcingPipeline(AbstractInferencePipeline):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         [Implementation of abstract method] Generate a single segment with block-wise streaming for Self-Forcing.
+        
+        STREAMING MODES:
+        ----------------
+        - TRUE_STREAMING: Real streaming with immediate VAE decode after each block.
+            * User sees first frames in ~500ms
+            * Requires KV offload (enabled by default) or large VRAM
+            * Best for interactive generation
+        
+        - DEFERRED_DECODE: Complete all diffusion first, then decode.
+            * User waits until all diffusion completes
+            * Faster total time (no VAE/diffusion overlap penalty)
+            * Not suitable for interactive generation
         
         SELF-FORCING ARCHITECTURE:
         -------------------------
@@ -483,8 +533,8 @@ class SelfForcingPipeline(AbstractInferencePipeline):
           * One complete generation cycle
           * Total time: ~3.5s (7 blocks × 500ms/block)
         
-        BLOCK-WISE STREAMING FLOW:
-        --------------------------
+        BLOCK-WISE STREAMING FLOW (TRUE_STREAMING):
+        -------------------------------------------
         For a 21-frame segment:
         
         Time    Block   Frames      Action
@@ -500,33 +550,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
         BENEFIT: User sees first 3 frames after 0.5s instead of waiting 3.5s for all 21 frames!
         
-        USAGE EXAMPLE:
-        --------------
-        # Example 1: Short video with real-time streaming
-        from inferix.core.media import create_streaming_backend
-        
-        streamer = create_streaming_backend("gradio")
-        streamer.connect(width=832, height=480, fps=16)
-        
-        pipeline.run_streaming_generation(
-            prompts=['a cat walking'],
-            stream_callback=streamer.stream_batch,
-            num_segments=1,
-            segment_length=21  # 7 blocks of 3 frames each
-        )
-        # Gradio receives frames progressively: 3 frames every ~500ms
-        
-        # Example 2: Long video with segment looping
-        pipeline.run_streaming_generation(
-            prompts=['a cat walking'],
-            stream_callback=streamer.stream_batch,
-            num_segments=10,       # 10 segments
-            segment_length=21,     # 21 frames per segment
-            overlap_frames=3       # 3 frames overlap (1 block)
-        )
-        # Total: 10 segments × 21 frames - 9 overlaps × 3 frames = 183 unique frames
-        # Gradio receives: 3 frames every ~500ms for ~35 seconds of generation
-        
         Args:
             prompt (str): Text prompt for current segment.
             initial_latent (Optional[torch.Tensor]): Initial latent for continuation.
@@ -541,25 +564,20 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             **kwargs:
                 - num_samples (int): Batch size, default 1
                 - low_memory (bool): Enable memory optimization, default False
+                - streaming_mode (StreamingMode): Streaming strategy, default AUTO
         
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
                 - decoded_video: [B, segment_length, H, W, C], float32, range [0, 1]
                 - final_latent: [B, segment_length, C, H, W] for next segment continuation
-        
-        Raises:
-            ValueError: If segment_length is not compatible with block size (3).
-        
-        Implementation Details:
-            1. Validates segment_length is multiple of block_size (3)
-            2. Creates block_decode_callback for progressive decoding
-            3. Calls CausalInferencePipeline.inference() with block_callback
-            4. Each block triggers: generate → decode → stream → continue
-            5. Returns concatenated video and final latent for continuation
         """
         # Extract parameters from kwargs
         num_samples = kwargs.get('num_samples', 1)
         low_memory = kwargs.get('low_memory', False)
+        streaming_mode = kwargs.get('streaming_mode', StreamingMode.AUTO)
+        
+        # Resolve streaming mode
+        resolved_mode = self._select_streaming_mode(streaming_mode, low_memory)
         
         rank = self.parallel_config.rank
         
@@ -584,6 +602,11 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                     f"Got {segment_length}. Valid values: {valid_values}"
                 )
         
+        # Print streaming mode info (only rank 0)
+        if rank == 0:
+            mode_info = "TRUE_STREAMING (real-time decode)" if resolved_mode == StreamingMode.TRUE_STREAMING else "DEFERRED_DECODE (batch decode)"
+            print(f"Streaming Mode: {mode_info}")
+        
         # Prepare inputs
         batch_prompts = [prompt] * num_samples
         noise_frames = segment_length - (initial_latent.shape[1] if initial_latent is not None else 0)
@@ -598,35 +621,47 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         kv_cache_manager = KVCacheManager(device=self.device)
         kv_cache_requests = [KVCacheRequest(f"stream_req_{idx}") for idx in range(num_samples)]
         
-        # Create a block callback wrapper for streaming
+        # Storage for decoded blocks (both modes) and latents (deferred mode)
         decoded_blocks = []
+        saved_block_latents = []  # For DEFERRED_DECODE mode
         
-        def block_decode_callback(block_latent: torch.Tensor, block_index: int):
-            """Decode and stream a single block immediately after generation"""
-            # Only decode and stream on rank 0
-            if rank != 0:
-                return
-            
-            # Decode block to pixel space
-            with torch.no_grad():
-                block_video = self.pipeline.vae.decode_to_pixel(block_latent, use_cache=False)
-                block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
+        if resolved_mode == StreamingMode.TRUE_STREAMING:
+            # TRUE STREAMING: Decode each block immediately after generation
+            def block_streaming_callback(block_latent: torch.Tensor, block_index: int):
+                """Immediately decode and stream each block (true streaming)"""
+                if rank != 0:
+                    return
                 
-                # Convert to [B, T, H, W, C] format
-                block_video = rearrange(block_video, 'b t c h w -> b t h w c')
+                # Free fragmented memory before VAE decode
+                torch.cuda.empty_cache()
                 
-                # Store for final concatenation
-                decoded_blocks.append(block_video.cpu())
+                # Decode this block immediately
+                with torch.no_grad():
+                    block_video = self.pipeline.vae.decode_to_pixel(block_latent, use_cache=True, chunk_size=1)
+                    block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
+                    block_video = rearrange(block_video, 'b t c h w -> b t h w c')
+                    
+                    # Stream via callback if provided
+                    if stream_callback is not None:
+                        for sample_idx in range(block_video.shape[0]):
+                            stream_frames = torch.clamp(block_video[sample_idx] * 255.0, 0, 255).to(torch.uint8)
+                            stream_callback(stream_frames)
+                    
+                    decoded_blocks.append(block_video.cpu())
                 
-                # Stream via callback if provided
-                if stream_callback is not None:
-                    # Stream each sample in the batch
-                    for sample_idx in range(block_video.shape[0]):
-                        # Convert to uint8 for streaming
-                        stream_frames = torch.clamp(block_video[sample_idx] * 255.0, 0, 255).to(torch.uint8)
-                        stream_callback(stream_frames)
-                        
                 print(f"✅ Block {block_index} decoded and streamed ({block_latent.shape[1]} frames)")
+            
+            block_callback = block_streaming_callback
+        else:
+            # DEFERRED DECODE: Save latents to CPU, decode after all diffusion completes
+            def block_latent_callback(block_latent: torch.Tensor, block_index: int):
+                """Save block latent for deferred decoding"""
+                if rank != 0:
+                    return
+                saved_block_latents.append(block_latent.cpu())
+                print(f"✅ Block {block_index} generated ({block_latent.shape[1]} frames)")
+            
+            block_callback = block_latent_callback
         
         # Execute inference with block callback
         print(f"Generating segment: {segment_length} frames, {num_samples} sample(s)")
@@ -640,21 +675,51 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             kv_cache_requests=kv_cache_requests,
             low_memory=low_memory,
             profile=self._profiling_enabled,
-            block_callback=block_decode_callback  # Pass block callback
+            block_callback=block_callback
         )
         
-        # Concatenate all decoded blocks
-        if rank == 0 and decoded_blocks:
+        # Clear KV cache to free GPU memory
+        for req in kv_cache_requests:
+            kv_cache_manager.free(req)
+        torch.cuda.empty_cache()
+        
+        # For DEFERRED_DECODE mode: now decode all blocks
+        if resolved_mode == StreamingMode.DEFERRED_DECODE and rank == 0 and saved_block_latents:
+            print(f"Decoding {len(saved_block_latents)} blocks with VAE...")
+            for block_idx, block_latent in enumerate(saved_block_latents):
+                # Move latent back to GPU for decode
+                block_latent_gpu = block_latent.to(self.device)
+                
+                # Decode this block
+                with torch.no_grad():
+                    block_video = self.pipeline.vae.decode_to_pixel(block_latent_gpu, use_cache=True, chunk_size=1)
+                    block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
+                    block_video = rearrange(block_video, 'b t c h w -> b t h w c')
+                    
+                    # Stream via callback if provided
+                    if stream_callback is not None:
+                        for sample_idx in range(block_video.shape[0]):
+                            stream_frames = torch.clamp(block_video[sample_idx] * 255.0, 0, 255).to(torch.uint8)
+                            stream_callback(stream_frames)
+                    
+                    decoded_blocks.append(block_video.cpu())
+                
+                # Free memory after each block
+                del block_latent_gpu
+                torch.cuda.empty_cache()
+            
+            print(f"✅ All {len(saved_block_latents)} blocks decoded and streamed")
+        
+        # Assemble full video
+        if decoded_blocks:
             full_video = torch.cat(decoded_blocks, dim=1)  # [B, T, H, W, C]
         else:
-            # Fallback: decode the entire video if block streaming wasn't used
-            full_video = self.pipeline.vae.decode_to_pixel(final_latents, use_cache=False)
+            # Fallback: decode the entire video (non-streaming path)
+            full_video = self.pipeline.vae.decode_to_pixel(final_latents, use_cache=True, chunk_size=1)
             full_video = (full_video * 0.5 + 0.5).clamp(0, 1)
             full_video = rearrange(full_video, 'b t c h w -> b t h w c').cpu()
         
-        # Clear cache
+        # Clear VAE cache
         self.pipeline.vae.model.clear_cache()
-        for req in kv_cache_requests:
-            kv_cache_manager.free(req)
         
         return full_video, final_latents

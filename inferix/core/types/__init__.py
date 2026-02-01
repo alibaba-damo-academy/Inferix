@@ -6,6 +6,7 @@ from .inference import (
     ModelMetaArgs,
     InferenceParams,
     DecodeMode,
+    StreamingMode,
     MemoryMode,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "ModelMetaArgs",
     "InferenceParams",
     "DecodeMode",
+    "StreamingMode",
     "MemoryMode",
 ]
