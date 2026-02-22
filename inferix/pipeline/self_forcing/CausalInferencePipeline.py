@@ -119,6 +119,7 @@ class CausalInferencePipeline(torch.nn.Module):
         decode_mode: DecodeMode = DecodeMode.AFTER_ALL,
         vae_chunk_size: Optional[int] = None,
         block_callback: Optional[callable] = None,
+        vae_decode_context: Optional[contextmanager] = None,
     ) -> Union[torch.Tensor, tuple]:
         """
         Perform inference on the given noise and text prompts.
@@ -142,6 +143,8 @@ class CausalInferencePipeline(torch.nn.Module):
                 None = use default (2 frames). Smaller = less memory, slower.
             block_callback (Optional[callable]): Callback function called after each block generation.
                                                 Receives (block_latent, block_index) for progressive streaming.
+            vae_decode_context (Optional[contextmanager]): Context manager for VAE decode memory management.
+                Used by AsyncMemoryManager to offload other components during VAE decode.
         Outputs:
             video (torch.Tensor): The generated video tensor of shape
                 (batch_size, num_output_frames, num_channels, height, width).
@@ -408,7 +411,13 @@ class CausalInferencePipeline(torch.nn.Module):
             # Use provided chunk_size or default to 2
             # use_cache=True enables chunked decode with temporal continuity for memory efficiency
             chunk_size = vae_chunk_size if vae_chunk_size is not None else 2
-            video = self.vae.decode_to_pixel(output, use_cache=True, chunk_size=chunk_size)
+            
+            # Use vae_decode_context if provided (for AsyncMemoryManager support)
+            if vae_decode_context is not None:
+                with vae_decode_context:
+                    video = self.vae.decode_to_pixel(output, use_cache=True, chunk_size=chunk_size)
+            else:
+                video = self.vae.decode_to_pixel(output, use_cache=True, chunk_size=chunk_size)
             video = (video * 0.5 + 0.5).clamp(0, 1)
 
         # Print profiling results if enabled

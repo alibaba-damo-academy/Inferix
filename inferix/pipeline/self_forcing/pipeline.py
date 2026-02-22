@@ -124,6 +124,33 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             'vae': self.pipeline.vae
         }
     
+    def _get_component_layer_info(self) -> Dict[str, Optional[List[str]]]:
+        """Return layer attributes for fine-grained memory management"""
+        return {
+            'generator': ['model.blocks'],  # Transformer blocks for layer-level management
+            'vae': None,
+            'text_encoder': None
+        }
+    
+    def _materialize_for_memory_manager(self, model, name: str, gpu, checkpoint):
+        """Override for memory manager mode with proper dtype handling"""
+        import torch
+        
+        model.to_empty(device='cpu')
+        
+        # Load checkpoint for generator
+        if name == 'generator' and checkpoint:
+            if hasattr(model, 'load_state_dict'):
+                model.load_state_dict(checkpoint, assign=True)
+        
+        # Convert to bfloat16 AFTER loading checkpoint
+        model.to(dtype=torch.bfloat16)
+        
+        # Text encoder is small, keep on GPU
+        if name in ['text_encoder']:
+            model.to(device=gpu)
+        # Generator and VAE stay on CPU for memory manager to handle
+    
     def _materialize_and_load(self, model, name: str, gpu, checkpoint, low_memory: bool):
         """Override to add special loading logic for different model components"""
         if name == 'generator' and low_memory and checkpoint and hasattr(model, 'model') and hasattr(model.model, 'blocks'):
@@ -378,7 +405,8 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                     kv_cache_requests=kv_cache_requests,
                     low_memory=low_memory,
                     vae_chunk_size=self._vae_chunk_size,
-                    profile=self._profiling_enabled
+                    profile=self._profiling_enabled,
+                    vae_decode_context=self._exclusive_component('vae') if self._memory_manager else None
                 )
             else:
                 # CausalDiffusionInferencePipeline does not support low_memory parameter
@@ -635,8 +663,8 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                 # Free fragmented memory before VAE decode
                 torch.cuda.empty_cache()
                 
-                # Decode this block immediately
-                with torch.no_grad():
+                # Decode this block immediately (with memory manager support)
+                with torch.no_grad(), self._exclusive_component('vae'):
                     block_video = self.pipeline.vae.decode_to_pixel(block_latent, use_cache=True, chunk_size=1)
                     block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
                     block_video = rearrange(block_video, 'b t c h w -> b t h w c')
@@ -690,8 +718,8 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                 # Move latent back to GPU for decode
                 block_latent_gpu = block_latent.to(self.device)
                 
-                # Decode this block
-                with torch.no_grad():
+                # Decode this block (with memory manager support)
+                with torch.no_grad(), self._exclusive_component('vae'):
                     block_video = self.pipeline.vae.decode_to_pixel(block_latent_gpu, use_cache=True, chunk_size=1)
                     block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
                     block_video = rearrange(block_video, 'b t c h w -> b t h w c')
@@ -714,10 +742,11 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         if decoded_blocks:
             full_video = torch.cat(decoded_blocks, dim=1)  # [B, T, H, W, C]
         else:
-            # Fallback: decode the entire video (non-streaming path)
-            full_video = self.pipeline.vae.decode_to_pixel(final_latents, use_cache=True, chunk_size=1)
-            full_video = (full_video * 0.5 + 0.5).clamp(0, 1)
-            full_video = rearrange(full_video, 'b t c h w -> b t h w c').cpu()
+            # Fallback: decode the entire video (non-streaming path, with memory manager support)
+            with self._exclusive_component('vae'):
+                full_video = self.pipeline.vae.decode_to_pixel(final_latents, use_cache=True, chunk_size=1)
+                full_video = (full_video * 0.5 + 0.5).clamp(0, 1)
+                full_video = rearrange(full_video, 'b t c h w -> b t h w c').cpu()
         
         # Clear VAE cache
         self.pipeline.vae.model.clear_cache()

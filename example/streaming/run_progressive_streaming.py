@@ -74,6 +74,8 @@ def main():
     # Optimization options
     parser.add_argument('--low_memory', action='store_true',
                        help='Enable memory optimization mode')
+    parser.add_argument('--use_memory_manager', action='store_true',
+                       help='Use AsyncMemoryManager for component-level offload (requires >= 24GB VRAM, auto-fallback if insufficient)')
     parser.add_argument('--use_ema', action='store_true',
                        help='Use EMA weights')
     parser.add_argument('--streaming_mode', type=str, default='auto',
@@ -109,6 +111,9 @@ def main():
     print(f"Segment length: {args.segment_length} frames")
     print(f"Overlap: {args.overlap_frames} frames")
     print(f"Total frames: {args.num_segments * args.segment_length - (args.num_segments - 1) * args.overlap_frames}")
+    if args.low_memory:
+        memory_mode = "AsyncMemoryManager (experimental)" if args.use_memory_manager else "DynamicSwapInstaller (legacy)"
+        print(f"Memory Mode: LOW_MEMORY ({memory_mode})")
     print("=" * 70)
     print()
     
@@ -139,7 +144,10 @@ def main():
     
     # Setup devices
     print("Setting up devices...")
-    pipeline.setup_devices(low_memory=args.low_memory)
+    pipeline.setup_devices(
+        low_memory=args.low_memory, 
+        use_memory_manager=args.use_memory_manager
+    )
     
     # Initialize streaming backend
     streamer = None

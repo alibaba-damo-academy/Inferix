@@ -13,7 +13,14 @@ from .utils import (
     gpu,
 )
 
+from .manager import (
+    AsyncMemoryManager,
+    MemoryUnit,
+    Granularity,
+)
+
 __all__ = [
+    # Utils
     "DynamicSwapInstaller",
     "fake_diffusers_current_device",
     "get_cuda_free_memory_gb",
@@ -24,4 +31,8 @@ __all__ = [
     "merge_dict_list",
     "cpu",
     "gpu",
+    # Manager
+    "AsyncMemoryManager",
+    "MemoryUnit",
+    "Granularity",
 ]

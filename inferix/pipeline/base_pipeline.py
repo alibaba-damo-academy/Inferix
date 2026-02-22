@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, List, Callable, Tuple
-from contextlib import nullcontext
+from typing import Any, Dict, Optional, List, Callable, Tuple, Union
+from contextlib import nullcontext, contextmanager
 import torch
 
 # Profiling imports - profiling is a core module and should always be available
 from ..profiling.profiler import InferixProfiler
 from ..profiling.config import ProfilingConfig
 from ..core.types import DecodeMode, MemoryMode
+from ..core.memory import AsyncMemoryManager, Granularity
 
 
 class AbstractInferencePipeline(ABC):
@@ -47,6 +48,9 @@ class AbstractInferencePipeline(ABC):
         else:
             self._profiler = None
             self._profiling_enabled = False
+        
+        # Memory manager for component-level offload (optional, experimental)
+        self._memory_manager: Optional[AsyncMemoryManager] = None
         
         # Note: Subclass may print more specific initialization messages
 
@@ -124,7 +128,12 @@ class AbstractInferencePipeline(ABC):
         """
         pass
     
-    def setup_devices(self, low_memory: bool = False, verbose: bool = False):
+    def setup_devices(
+        self, 
+        low_memory: bool = False, 
+        verbose: bool = False,
+        use_memory_manager: bool = False
+    ):
         """
         [Template Method] Setup devices with meta device optimization.
         
@@ -138,6 +147,9 @@ class AbstractInferencePipeline(ABC):
         Args:
             low_memory (bool): Enable CPU offloading for memory-constrained GPUs.
             verbose (bool): Enable detailed memory usage logs during loading.
+            use_memory_manager (bool): Use AsyncMemoryManager for component-level offload.
+                                       Requires >= 24GB VRAM. Will auto-fallback to
+                                       DynamicSwapInstaller on smaller GPUs.
         """
         import gc
         import torch
@@ -145,6 +157,13 @@ class AbstractInferencePipeline(ABC):
         
         gpu = get_gpu()
         checkpoint = getattr(self, '_checkpoint_state_dict', None)
+        
+        # Check if memory manager is suitable for this GPU
+        total_memory_gb = torch.cuda.get_device_properties(gpu).total_memory / (1024**3)
+        if use_memory_manager and total_memory_gb < 24:
+            print(f"⚠️  AsyncMemoryManager requires >= 24GB VRAM (detected: {total_memory_gb:.1f}GB)")
+            print(f"   Falling back to DynamicSwapInstaller...")
+            use_memory_manager = False
         
         # Show memory info only in verbose/low_memory mode
         log_memory = verbose or low_memory
@@ -154,16 +173,150 @@ class AbstractInferencePipeline(ABC):
         # Get model components from subclass
         model_components = self._get_model_components()
         
+        # Track component info for memory manager registration
+        component_layer_info = self._get_component_layer_info()
+        
         for name, model in model_components.items():
             if log_memory:
                 print(f"Loading {name}...")
-            self._materialize_and_load(model, name, gpu, checkpoint, low_memory)
+            
+            # Use memory manager mode or traditional mode
+            if use_memory_manager and low_memory:
+                self._materialize_for_memory_manager(model, name, gpu, checkpoint)
+            else:
+                self._materialize_and_load(model, name, gpu, checkpoint, low_memory)
+            
             torch.cuda.empty_cache()
             gc.collect()
             if log_memory:
                 print(f"After {name}: {get_cuda_free_memory_gb(gpu):.2f} GB free")
         
+        # Initialize memory manager if requested and suitable
+        if use_memory_manager and low_memory:
+            self._init_memory_manager(gpu, model_components, component_layer_info)
+        
         print("✅ All models loaded successfully")
+    
+    def _get_component_layer_info(self) -> Dict[str, Optional[List[str]]]:
+        """
+        [Template Method] Return layer attribute names for each component.
+        
+        Subclasses can override to specify which attributes contain layers
+        for fine-grained memory management.
+        
+        Returns:
+            Dict mapping component name to list of layer attribute names.
+            Example: {'generator': ['model.blocks'], 'vae': None}
+        """
+        return {}
+    
+    def _materialize_for_memory_manager(self, model, name: str, gpu, checkpoint):
+        """
+        Materialize model for AsyncMemoryManager mode.
+        
+        In this mode, models are loaded to CPU first, then registered with
+        the memory manager for explicit GPU/CPU swapping.
+        """
+        import torch
+        
+        model.to_empty(device='cpu')
+        
+        # Load checkpoint if this is the generator
+        if checkpoint and name == 'generator':
+            if hasattr(model, 'load_state_dict'):
+                model.load_state_dict(checkpoint, assign=True)
+        
+        # Convert to bfloat16 AFTER loading checkpoint (checkpoint may have float32 params)
+        model.to(dtype=torch.bfloat16)
+        
+        # Keep on CPU for now - memory manager will handle GPU placement
+        # except for models that need to be on GPU immediately
+        if name in ['text_encoder']:  # Text encoder is small, keep on GPU
+            model.to(device=gpu)
+    
+    def _init_memory_manager(
+        self, 
+        gpu: torch.device,
+        components: Dict[str, Any],
+        layer_info: Dict[str, Optional[List[str]]]
+    ):
+        """
+        Initialize AsyncMemoryManager with registered components.
+        """
+        from inferix.core.memory.utils import get_cuda_free_memory_gb
+        
+        # Create memory manager with auto-detected budget
+        self._memory_manager = AsyncMemoryManager(
+            device=gpu,
+            budget_gb=get_cuda_free_memory_gb(gpu) * 0.85
+        )
+        
+        # Register each component
+        for name, model in components.items():
+            layer_names = layer_info.get(name)
+            self._memory_manager.register_component(name, model, layer_names)
+        
+        # Load generator to GPU as initial state (needed for diffusion first)
+        if 'generator' in components:
+            self._memory_manager.load_async('generator')
+            self._memory_manager.wait('generator')
+            print(f"  [MemoryManager] Generator loaded to GPU as initial state")
+        
+        print(f"✅ AsyncMemoryManager initialized (budget: {self._memory_manager.budget_gb:.1f} GB)")
+    
+    @contextmanager
+    def _use_component(self, *names: str):
+        """
+        Context manager to ensure specified components are on GPU.
+        
+        Use this in inference code to automatically manage component placement.
+        Only active when memory manager is enabled.
+        
+        Args:
+            *names: Component names to load to GPU
+            
+        Example:
+            with self._use_component('generator'):
+                latent = generator.denoise(...)
+        """
+        if self._memory_manager is not None:
+            with self._memory_manager.use(*names):
+                yield
+        else:
+            yield
+    
+    @contextmanager
+    def _exclusive_component(self, name: str):
+        """
+        Context manager for exclusive component access (offloads others).
+        
+        Use this when you need maximum memory for a specific component,
+        e.g., VAE decode.
+        
+        Args:
+            name: Component name to keep on GPU exclusively
+            
+        Example:
+            with self._exclusive_component('vae'):
+                video = vae.decode(latent)
+        """
+        if self._memory_manager is not None:
+            with self._memory_manager.exclusive(name):
+                yield
+        else:
+            yield
+    
+    def _prefetch_component(self, name: str):
+        """
+        Start loading a component in background.
+        
+        Use this to overlap data transfer with computation.
+        
+        Args:
+            name: Component name to prefetch
+        """
+        if self._memory_manager is not None:
+            self._memory_manager.prefetch(name)
     
     def _get_model_components(self) -> Dict[str, Any]:
         """

@@ -40,6 +40,8 @@ def parse_arguments():
                         help="Memory mode preset (overrides config file)")
     parser.add_argument("--vae_chunk_size", type=int, default=None,
                         help="VAE decode chunk size (overrides memory_mode preset)")
+    parser.add_argument("--use_memory_manager", action="store_true",
+                        help="Use AsyncMemoryManager for component-level offload (requires >= 24GB VRAM, auto-fallback if insufficient)")
     return parser.parse_args()
 
 
@@ -88,6 +90,10 @@ def main():
     print(f'[Rank {rank}] Free VRAM {get_cuda_free_memory_gb(gpu)} GB')
     low_memory = get_cuda_free_memory_gb(gpu) < 40
     
+    if low_memory:
+        memory_mode = "AsyncMemoryManager (experimental)" if args.use_memory_manager else "DynamicSwapInstaller (legacy)"
+        print(f'[Rank {rank}] Memory Mode: LOW_MEMORY ({memory_mode})')
+    
     # Initialize pipeline
     pipeline = SelfForcingPipeline(
         config_path=args.config_path,
@@ -106,7 +112,11 @@ def main():
     pipeline.load_checkpoint(args.checkpoint_path, use_ema=args.use_ema)
     
     # Set device
-    pipeline.setup_devices(low_memory=low_memory, verbose=True)
+    pipeline.setup_devices(
+        low_memory=low_memory, 
+        verbose=True,
+        use_memory_manager=args.use_memory_manager
+    )
     
     # Parse prompts
     prompts = [p.strip() for p in args.prompt.split(';') if p.strip()]
