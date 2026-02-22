@@ -263,11 +263,6 @@ def my_stream_callback(frames: torch.Tensor):
         save_image(frame, f"frame_{i}.png")
 ```
 
----
-
-## Traditional Streaming
-
-### WebRTC (Recommended)
 
 ## Prerequisites
 
