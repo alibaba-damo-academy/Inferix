@@ -10,7 +10,21 @@ from .inference import (
     MemoryMode,
 )
 
+from .interactive import (
+    InputApplyPolicy,
+    InputState,
+    SessionState,
+    ControlCommand,
+    QueuedInput,
+    GenerationStatus,
+    CheckpointResult,
+    SegmentBoundary,
+    calculate_total_frames,
+    validate_overlap_config,
+)
+
 __all__ = [
+    # Inference types
     "PackedCoreAttnParams",
     "PackedCrossAttnParams", 
     "ModelMetaArgs",
@@ -18,4 +32,15 @@ __all__ = [
     "DecodeMode",
     "StreamingMode",
     "MemoryMode",
+    # Interactive types
+    "InputApplyPolicy",
+    "InputState",
+    "SessionState",
+    "ControlCommand",
+    "QueuedInput",
+    "GenerationStatus",
+    "CheckpointResult",
+    "SegmentBoundary",
+    "calculate_total_frames",
+    "validate_overlap_config",
 ]

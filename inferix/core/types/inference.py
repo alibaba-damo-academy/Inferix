@@ -22,22 +22,22 @@ class StreamingMode(Enum):
     TRUE_STREAMING: Real streaming with block-by-block VAE decode.
         - Each block is decoded immediately after diffusion
         - User sees first frames in ~500ms
-        - Requires KV offload (default enabled) or large VRAM (>=24GB)
-        - Best for interactive generation, low latency requirements
+        - Memory: Requires >= 24GB VRAM, OR low_memory mode with DynamicSwapInstaller
+        - Best for: Interactive generation, real-time preview
         
-    DEFERRED_DECODE: Fake streaming, all diffusion first, then VAE decode.
+    DEFERRED_DECODE: Batch decode after all diffusion completes.
         - All blocks generated first, then decoded in sequence
-        - User waits until all diffusion completes
-        - Fastest total generation time (no VAE/Diffusion overlap penalty)
-        - Not suitable for interactive generation
+        - User waits until all diffusion completes (~3-5s for 21 frames)
+        - Memory: VAE decode (~7.7GB) + generator offloaded before decode on 16GB GPUs
+        - Best for: Non-interactive generation, fastest total time
         
     AUTO: Automatically select based on hardware and configuration.
-        - KV offload enabled + low_memory → TRUE_STREAMING
-        - Large VRAM (>=24GB) → TRUE_STREAMING  
-        - Otherwise → DEFERRED_DECODE
+        - >= 24GB VRAM → TRUE_STREAMING
+        - 16GB + low_memory → TRUE_STREAMING (with DynamicSwapInstaller)
+        - 16GB + no low_memory → DEFERRED_DECODE (with manual offload)
     """
     TRUE_STREAMING = "true_streaming"    # Real streaming: decode each block immediately
-    DEFERRED_DECODE = "deferred_decode"  # Fake streaming: decode after all diffusion
+    DEFERRED_DECODE = "deferred_decode"  # Batch decode: decode after all diffusion
     AUTO = "auto"                        # Auto-select based on hardware
 
 

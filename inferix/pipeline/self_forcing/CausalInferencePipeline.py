@@ -96,7 +96,7 @@ class CausalInferencePipeline(torch.nn.Module):
         self.crossattn_cache_meta = None
         self.args = args
         self.num_frame_per_block = getattr(args, "num_frame_per_block", 1)
-        self.independent_first_frame = args.independent_first_frame
+        self.independent_first_frame = getattr(args, "independent_first_frame", False)
         self.local_attn_size = self.generator.model.local_attn_size
 
         if self.parallel_config.rank == 0:
@@ -347,7 +347,7 @@ class CausalInferencePipeline(torch.nn.Module):
 
                 # Step 3.3: rerun with timestep zero to update KV cache using clean context
                 if timestep is not None:
-                    context_timestep = torch.ones_like(timestep) * self.args.context_noise
+                    context_timestep = torch.ones_like(timestep) * getattr(self.args, 'context_noise', 0)
                     if denoised_pred is not None:
                         self.generator(
                             noisy_image_or_video=denoised_pred,

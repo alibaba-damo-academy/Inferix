@@ -1,13 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, List, Callable, Tuple, Union
+from typing import Any, Dict, Optional, List, Callable, Tuple, Union, TYPE_CHECKING
 from contextlib import nullcontext, contextmanager
 import torch
 
 # Profiling imports - profiling is a core module and should always be available
 from ..profiling.profiler import InferixProfiler
 from ..profiling.config import ProfilingConfig
-from ..core.types import DecodeMode, MemoryMode
+from ..core.types import DecodeMode, MemoryMode, InputApplyPolicy, ControlCommand, SegmentBoundary, calculate_total_frames, validate_overlap_config, CheckpointResult, SessionState
 from ..core.memory import AsyncMemoryManager, Granularity
+
+if TYPE_CHECKING:
+    from ..core.interactive import InteractiveSession
 
 
 class AbstractInferencePipeline(ABC):
@@ -731,6 +734,357 @@ class AbstractInferencePipeline(ABC):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     
+    # =========================================================================
+    # Interactive Generation Methods
+    # =========================================================================
+    
+    def run_interactive_generation(
+        self,
+        session: "InteractiveSession",
+        initial_prompt: str,
+        num_segments: int = 1,
+        segment_length: int = 21,
+        overlap_frames: int = 3,
+        stream_callback: Optional[Callable[[torch.Tensor], None]] = None,
+        block_size: int = 3,
+        **kwargs
+    ) -> Optional[torch.Tensor]:
+        """
+        [Framework-level Method] Interactive video generation with async queue-based input.
+        
+        This method provides fundamental interactive generation capability,
+        replacing run_streaming_generation's cyclic prompts with InteractiveSession.
+        
+        KEY FEATURES:
+        - Async queue-based input (not real-time, suitable for consumer GPUs)
+        - Checkpoint evaluation at segment boundaries
+        - Pause/Resume/Stop control
+        - Status broadcast to UI
+        - Comprehensive boundary validation
+        
+        BOUNDARY HANDLING:
+        - Overlap frames extracted correctly at segment transitions
+        - Prompt changes applied at segment boundaries only (NEXT_SEGMENT policy)
+        - KV cache should be cleared by subclass when prompt changes
+        
+        USAGE:
+            session = InteractiveSession(apply_policy=InputApplyPolicy.NEXT_SEGMENT)
+            session.set_initial_prompt("A cat walking")
+            session.set_status_callback(ui_backend.broadcast_status)
+            
+            video = pipeline.run_interactive_generation(
+                session=session,
+                initial_prompt="A cat walking",
+                num_segments=10,
+                segment_length=21,
+                overlap_frames=3,
+                stream_callback=streamer.stream_batch,
+            )
+        
+        Args:
+            session: InteractiveSession managing user input and state
+            initial_prompt: Initial text prompt for generation
+            num_segments: Number of segments to generate
+            segment_length: Frames per segment (must be multiple of block_size)
+            overlap_frames: Overlapping frames between segments (must be multiple of block_size)
+            stream_callback: Optional callback for streaming decoded frames
+            block_size: Model's block size for boundary validation
+            **kwargs: Additional model-specific parameters
+            
+        Returns:
+            Generated video tensor [B, T, H, W, C], or None if stopped early
+            
+        Raises:
+            ValueError: If boundary configuration is invalid
+        """
+        # Import here to avoid circular import
+        from ..core.interactive import InteractiveSession
+        
+        # Validate boundary configuration
+        self._validate_boundary_config(
+            segment_length=segment_length,
+            overlap_frames=overlap_frames,
+            block_size=block_size,
+            num_segments=num_segments,
+        )
+        
+        # Initialize session
+        session.set_initial_prompt(initial_prompt)
+        session.set_generation_params(
+            total_segments=num_segments,
+            blocks_per_segment=segment_length // block_size,
+        )
+        session.start_session()
+        
+        # Print configuration
+        self._print_generation_config(
+            num_prompts=1,  # Session manages prompts dynamically
+            num_segments=num_segments,
+            segment_length=segment_length,
+            overlap_frames=overlap_frames,
+            interactive=True,
+            **kwargs
+        )
+        
+        print(f"[Interactive] Starting session {session.session_id}")
+        print(f"[Interactive] Apply policy: {session.apply_policy.value}")
+        print(f"[Interactive] Total frames: {calculate_total_frames(num_segments, segment_length, overlap_frames)}")
+        
+        all_videos = []
+        initial_latent = None
+        current_prompt = initial_prompt
+        current_guidance = kwargs.get('guidance_scale', 7.5)
+        
+        try:
+            for segment_idx in range(num_segments):
+                # Validate segment boundary
+                boundary = self._validate_segment_boundary(
+                    segment_idx=segment_idx,
+                    num_segments=num_segments,
+                    overlap_frames=overlap_frames,
+                    segment_length=segment_length,
+                    block_size=block_size,
+                    initial_latent=initial_latent,
+                )
+                
+                # Evaluate checkpoint at segment start
+                checkpoint_result = session.evaluate_checkpoint(
+                    checkpoint_type="segment",
+                    checkpoint_index=segment_idx,
+                    current_prompt=current_prompt,
+                    current_guidance=current_guidance,
+                )
+                
+                # Handle control commands
+                if checkpoint_result.command == ControlCommand.STOP:
+                    print(f"[Interactive] Stop requested at segment {segment_idx}")
+                    break
+                
+                # Apply parameter changes
+                if checkpoint_result.new_prompt:
+                    print(f"[Interactive] Prompt changed: '{current_prompt[:30]}...' -> '{checkpoint_result.new_prompt[:30]}...'")
+                    current_prompt = checkpoint_result.new_prompt
+                
+                if checkpoint_result.new_guidance:
+                    print(f"[Interactive] Guidance changed: {current_guidance} -> {checkpoint_result.new_guidance}")
+                    current_guidance = checkpoint_result.new_guidance
+                
+                # Wait if paused
+                while session.should_pause():
+                    if session.should_stop():
+                        break
+                    session.wait_for_resume(timeout=0.1)
+                
+                if session.should_stop():
+                    break
+                
+                print(f"[Interactive] Segment {segment_idx + 1}/{num_segments}...")
+                
+                # Generate segment
+                video_segment, final_latent = self._generate_segment_with_streaming(
+                    prompt=current_prompt,
+                    initial_latent=initial_latent,
+                    stream_callback=stream_callback,
+                    segment_length=segment_length,
+                    guidance_scale=current_guidance,
+                    **kwargs
+                )
+                
+                all_videos.append(video_segment)
+                
+                # Update session progress
+                frames_generated = sum(v.shape[1] for v in all_videos)
+                gpu_memory_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+                session.update_progress(
+                    segment_idx=segment_idx,
+                    block_idx=segment_length // block_size - 1,
+                    frames_generated=frames_generated,
+                    gpu_memory_gb=gpu_memory_gb,
+                )
+                
+                # Extract overlap for next segment
+                if segment_idx < num_segments - 1:
+                    initial_latent = self._extract_overlap_latent(
+                        final_latent=final_latent,
+                        overlap_frames=overlap_frames,
+                        segment_idx=segment_idx,
+                    )
+                
+                # Clean up memory
+                self._cleanup_segment_memory()
+        
+        except Exception as e:
+            session.end_session(error=True)
+            raise
+        
+        finally:
+            session.end_session(error=False)
+        
+        # Concatenate results
+        if len(all_videos) == 0:
+            return None
+        
+        result = torch.cat(all_videos, dim=1) if len(all_videos) > 1 else all_videos[0]
+        print(f"[Interactive] Generation completed: {result.shape[1]} frames")
+        
+        return result
+    
+    def _validate_boundary_config(
+        self,
+        segment_length: int,
+        overlap_frames: int,
+        block_size: int,
+        num_segments: int,
+    ):
+        """Validate boundary configuration before generation.
+        
+        Args:
+            segment_length: Frames per segment
+            overlap_frames: Overlapping frames between segments
+            block_size: Model's block size
+            num_segments: Number of segments
+            
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        # Validate segment_length
+        if segment_length <= 0:
+            raise ValueError(f"segment_length must be positive, got {segment_length}")
+        
+        if segment_length % block_size != 0:
+            raise ValueError(
+                f"segment_length ({segment_length}) must be divisible by block_size ({block_size})"
+            )
+        
+        # Validate overlap_frames
+        validate_overlap_config(overlap_frames, block_size)
+        
+        if overlap_frames >= segment_length:
+            raise ValueError(
+                f"overlap_frames ({overlap_frames}) must be less than segment_length ({segment_length})"
+            )
+        
+        # Validate num_segments
+        if num_segments <= 0:
+            raise ValueError(f"num_segments must be positive, got {num_segments}")
+        
+        # Warn about potential issues
+        if num_segments > 1 and overlap_frames == 0:
+            print("[Warning] No overlap between segments. Transitions may be discontinuous.")
+    
+    def _validate_segment_boundary(
+        self,
+        segment_idx: int,
+        num_segments: int,
+        overlap_frames: int,
+        segment_length: int,
+        block_size: int,
+        initial_latent: Optional[torch.Tensor],
+    ) -> SegmentBoundary:
+        """Validate and compute segment boundary information.
+        
+        Args:
+            segment_idx: Current segment index (0-based)
+            num_segments: Total number of segments
+            overlap_frames: Overlapping frames between segments
+            segment_length: Frames per segment
+            block_size: Model's block size
+            initial_latent: Initial latent for this segment (None for first segment)
+            
+        Returns:
+            SegmentBoundary with validated information
+            
+        Raises:
+            ValueError: If boundary is invalid
+        """
+        is_first = (segment_idx == 0)
+        is_last = (segment_idx == num_segments - 1)
+        
+        # Calculate frame indices
+        if is_first:
+            start_frame = 0
+            end_frame = segment_length - 1
+            unique_frames = segment_length
+            overlap_with_previous = 0
+        else:
+            # Non-first segments start after overlap
+            start_frame = segment_idx * segment_length - segment_idx * overlap_frames
+            end_frame = start_frame + segment_length - 1
+            unique_frames = segment_length - overlap_frames
+            overlap_with_previous = overlap_frames
+        
+        # Validate initial_latent
+        if initial_latent is not None:
+            if is_first:
+                raise ValueError(
+                    f"First segment (idx=0) should have initial_latent=None, "
+                    f"got tensor with shape {initial_latent.shape}"
+                )
+            
+            latent_frames = initial_latent.shape[1]
+            if latent_frames != overlap_frames:
+                raise ValueError(
+                    f"initial_latent has {latent_frames} frames, expected {overlap_frames} "
+                    f"overlap frames for segment {segment_idx}"
+                )
+        elif not is_first:
+            raise ValueError(
+                f"Non-first segment (idx={segment_idx}) requires initial_latent with "
+                f"{overlap_frames} frames, got None"
+            )
+        
+        return SegmentBoundary(
+            segment_idx=segment_idx,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            unique_frames=unique_frames,
+            overlap_with_previous=overlap_with_previous,
+            is_first=is_first,
+            is_last=is_last,
+        )
+    
+    def _extract_overlap_latent(
+        self,
+        final_latent: torch.Tensor,
+        overlap_frames: int,
+        segment_idx: int,
+    ) -> torch.Tensor:
+        """Extract overlap frames from final latent for next segment.
+        
+        Args:
+            final_latent: Final latent tensor [B, T, C, H, W]
+            overlap_frames: Number of overlap frames to extract
+            segment_idx: Current segment index (for logging)
+            
+        Returns:
+            Overlap latent tensor [B, overlap_frames, C, H, W]
+            
+        Raises:
+            ValueError: If extraction fails
+        """
+        if overlap_frames <= 0:
+            raise ValueError(f"overlap_frames must be positive, got {overlap_frames}")
+        
+        if final_latent is None:
+            raise ValueError("final_latent is None, cannot extract overlap")
+        
+        total_frames = final_latent.shape[1]
+        if total_frames < overlap_frames:
+            raise ValueError(
+                f"final_latent has {total_frames} frames, cannot extract {overlap_frames} overlap frames"
+            )
+        
+        # Extract last overlap_frames
+        overlap_latent = final_latent[:, -overlap_frames:]
+        
+        # Validate shape
+        assert overlap_latent.shape[1] == overlap_frames, \
+            f"Extracted {overlap_latent.shape[1]} frames, expected {overlap_frames}"
+        
+        print(f"[Interactive] Extracted {overlap_frames} overlap frames for segment {segment_idx + 2}")
+        
+        return overlap_latent
+    
     def _print_generation_config(
         self,
         num_prompts: int,
@@ -742,8 +1096,8 @@ class AbstractInferencePipeline(ABC):
         """
         Print generation configuration summary before video generation.
         
-        This method is called by run_streaming_generation() and can be overridden
-        by subclasses to add model-specific configuration details.
+        This method is called by run_streaming_generation() and run_interactive_generation()
+        and can be overridden by subclasses to add model-specific configuration details.
         
         Args:
             num_prompts: Number of prompts
@@ -751,6 +1105,7 @@ class AbstractInferencePipeline(ABC):
             segment_length: Frames per segment
             overlap_frames: Overlapping frames between segments
             **kwargs: Additional model-specific parameters
+                - interactive: If True, indicate interactive mode
         """
         # Extract common parameters
         num_samples = kwargs.get('num_samples', 1)
@@ -758,6 +1113,7 @@ class AbstractInferencePipeline(ABC):
         decode_mode = kwargs.get('decode_mode', 'AFTER_ALL')
         memory_mode = kwargs.get('memory_mode', 'balanced')
         chunk_size = kwargs.get('chunk_size', None)
+        interactive = kwargs.get('interactive', False)
         
         # Normalize mode names
         if hasattr(decode_mode, 'value'):
@@ -784,11 +1140,14 @@ class AbstractInferencePipeline(ABC):
             total_frames = segment_length
         
         print("\n" + "=" * 60)
-        print("Generation Configuration")
+        mode_str = "Interactive Generation" if interactive else "Generation Configuration"
+        print(mode_str)
         print("=" * 60)
+        if interactive:
+            print(f"Mode:            Interactive (async queue)")
         print(f"Prompts:         {num_prompts}")
         print(f"Batch Size:      {num_samples}")
-        print(f"Total Frames:    {total_frames} ({num_segments} seg × {segment_length} frames)")
+        print(f"Total Frames:    {total_frames} ({num_segments} seg x {segment_length} frames)")
         if num_segments > 1:
             print(f"Overlap:         {overlap_frames} frames")
         

@@ -17,7 +17,7 @@ from inferix.core.media import create_streaming_backend
 
 from inferix.pipeline.base_pipeline import AbstractInferencePipeline
 from inferix.profiling.config import ProfilingConfig
-from inferix.core.types import StreamingMode
+from inferix.core.types import StreamingMode, DecodeMode
 from inferix.core.memory.utils import get_cuda_free_memory_gb
 # Import the profiling decorators directly from the decorators module
 from inferix.profiling.decorators import profile_method, profile_session, add_profiling_event
@@ -499,12 +499,20 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         """
         Select the best streaming mode based on configuration and hardware.
         
-        TRUE_STREAMING requires Generator + VAE decode to run concurrently on GPU:
-        - Generator weights + activations: ~8.4 GB
-        - VAE decode: ~7.7 GB
-        - Total: ~16.1 GB minimum
+        MEMORY REQUIREMENTS:
+        - TRUE_STREAMING: Generator + VAE decode concurrently (~16.1 GB)
+          * Requires >= 24GB VRAM, OR low_memory mode with DynamicSwapInstaller
+          * Best for interactive generation (user sees frames in ~500ms)
         
-        Therefore TRUE_STREAMING requires >= 20 GB total VRAM for safety margin.
+        - DEFERRED_DECODE: All diffusion first, then decode
+          * Requires VAE decode memory (~7.7 GB) + minimal overhead
+          * Generator is offloaded before decode on constrained GPUs
+          * Faster total time but user waits until completion
+        
+        AUTO SELECTION LOGIC:
+        - >= 24GB: TRUE_STREAMING (no offload needed)
+        - 16GB + low_memory: TRUE_STREAMING (DynamicSwapInstaller handles offload)
+        - 16GB + no low_memory: DEFERRED_DECODE (manual offload before decode)
         
         Args:
             streaming_mode: Requested streaming mode (AUTO, TRUE_STREAMING, or DEFERRED_DECODE)
@@ -516,16 +524,19 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         if streaming_mode != StreamingMode.AUTO:
             return streaming_mode
         
-        # AUTO mode: determine best strategy based on total GPU memory
-        # TRUE_STREAMING requires ~16 GB concurrent usage (Generator + VAE decode)
-        # We use 20 GB as threshold for safety margin
         total_memory_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024**3)
         
-        if total_memory_gb >= 20:
+        # Large VRAM: TRUE_STREAMING without any offload
+        if total_memory_gb >= 24:
             return StreamingMode.TRUE_STREAMING
-        else:
-            # For 16GB or less, use DEFERRED_DECODE which decodes after diffusion completes
-            return StreamingMode.DEFERRED_DECODE
+        
+        # 16GB with low_memory: TRUE_STREAMING with DynamicSwapInstaller
+        if low_memory:
+            return StreamingMode.TRUE_STREAMING
+        
+        # 16GB without low_memory: DEFERRED_DECODE with manual generator offload
+        # This is slower but works without DynamicSwapInstaller overhead
+        return StreamingMode.DEFERRED_DECODE
     
     def _generate_segment_with_streaming(
         self,
@@ -691,6 +702,11 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             
             block_callback = block_latent_callback
         
+        # Determine decode_mode based on streaming mode
+        # DEFERRED_DECODE: Skip VAE decode in inference, decode externally after offloading generator
+        # TRUE_STREAMING: VAE decode happens in block_callback
+        decode_mode = DecodeMode.NO_DECODE if resolved_mode == StreamingMode.DEFERRED_DECODE else DecodeMode.AFTER_ALL
+        
         # Execute inference with block callback
         print(f"Generating segment: {segment_length} frames, {num_samples} sample(s)")
         
@@ -703,7 +719,8 @@ class SelfForcingPipeline(AbstractInferencePipeline):
             kv_cache_requests=kv_cache_requests,
             low_memory=low_memory,
             profile=self._profiling_enabled,
-            block_callback=block_callback
+            block_callback=block_callback,
+            decode_mode=decode_mode,
         )
         
         # Clear KV cache to free GPU memory
@@ -713,6 +730,18 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
         # For DEFERRED_DECODE mode: now decode all blocks
         if resolved_mode == StreamingMode.DEFERRED_DECODE and rank == 0 and saved_block_latents:
+            # Offload generator to CPU before VAE decode (critical for 16GB GPUs)
+            # This is needed because DEFERRED_DECODE completes all diffusion first,
+            # then decodes, so generator is still on GPU consuming ~8.4GB
+            generator_on_cpu = False
+            if not low_memory:
+                generator_device = next(self.pipeline.generator.parameters()).device
+                if generator_device.type == 'cuda':
+                    print("[Memory] Offloading generator to CPU for VAE decode...")
+                    self.pipeline.generator.to('cpu')
+                    torch.cuda.empty_cache()
+                    generator_on_cpu = True
+            
             print(f"Decoding {len(saved_block_latents)} blocks with VAE...")
             for block_idx, block_latent in enumerate(saved_block_latents):
                 # Move latent back to GPU for decode
@@ -737,6 +766,12 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                 torch.cuda.empty_cache()
             
             print(f"✅ All {len(saved_block_latents)} blocks decoded and streamed")
+            
+            # Restore generator to GPU for next segment
+            if generator_on_cpu:
+                print("[Memory] Restoring generator to GPU...")
+                self.pipeline.generator.to(self.device)
+                torch.cuda.empty_cache()
         
         # Assemble full video
         if decoded_blocks:

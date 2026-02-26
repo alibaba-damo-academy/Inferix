@@ -47,6 +47,8 @@ distribution_loss: dmd
 trainer: score_distillation
 gradient_checkpointing: true
 num_frame_per_block: 3
+independent_first_frame: false
+context_noise: 0
 load_raw_video: false
 model_kwargs:
   timestep_shift: 5.0
