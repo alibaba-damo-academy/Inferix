@@ -30,6 +30,7 @@ Therefore, **Inferix** is specifically designed as a next-generation inference e
 - 🧠 **Advanced KV Cache Management**: Intelligent memory management for persistent world simulation
 - 🔀 **Distributed World Synthesis**: Support for large-scale immersive environment generation
 - 📹 **Video Streaming**: Basic video streaming capabilities for generated content, with both RTMP and WebRTC supported as streaming protocols.
+- 🎮 **Interactive Generation**: Real-time video preview with Gradio UI, supports prompt changes and generation controls (pause/resume/stop). Works on 16GB consumer GPUs.
 - 🔧 **Seamless Model Integration**: Simple API for world model deployment
 - 📊 **Next-Gen Architecture**: Built for immersive world synthesis at scale
 - 📈 **Built-in Profiling**: Performance monitoring and analysis capabilities with enhanced diffusion model profiling
@@ -65,7 +66,7 @@ For end-to-end progressive streaming usage and recommended settings on a single 
 - [ ] Advanced real-time streaming capabilities
 
 ### World Model Support
-- [ ] Interactive World Models
+- [x] Interactive World Models (basic: prompt change, pause/resume/stop)
 - [ ] Enhanced Simulation Capabilities
 - [ ] Persistent World State Management
 

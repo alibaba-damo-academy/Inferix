@@ -12,10 +12,11 @@ This guide covers **progressive streaming** (block-wise generation) for real-tim
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
-2. [Streaming Backends](#streaming-backends)
-3. [Architecture: Block vs Segment](#architecture-block-vs-segment)
-4. [Progressive Streaming API](#progressive-streaming-api)
-5. [Examples](#examples)
+2. [Interactive Generation](#interactive-generation)
+3. [Streaming Backends](#streaming-backends)
+4. [Architecture: Block vs Segment](#architecture-block-vs-segment)
+5. [Progressive Streaming API](#progressive-streaming-api)
+6. [Examples](#examples)
 
 ---
 
@@ -35,6 +36,36 @@ python example/streaming/run_progressive_streaming.py \
 ```
 
 **Access**: Open `http://localhost:8000` in your browser to see real-time generation.
+
+---
+
+## Interactive Generation
+
+**New**: Real-time interactive generation with Gradio UI.
+
+```bash
+python example/streaming/run_interactive_streaming.py \
+    --config_path example/self_forcing/configs/self_forcing_dmd.yaml \
+    --checkpoint_path ./weights/self_forcing/checkpoints/self_forcing_dmd.pt \
+    --prompt "A cat walking in a garden" \
+    --num_segments 5 \
+    --use_ema
+```
+
+**Features**:
+- Real-time video preview in browser
+- Submit new prompts to change generation direction
+- Pause/Resume/Stop controls
+- Works on 16GB GPUs (DEFERRED_DECODE mode)
+
+### Memory Modes
+
+| GPU Memory | Mode | Experience |
+|------------|------|------------|
+| ≥24GB | TRUE_STREAMING | Real-time block-by-block preview |
+| 16GB | DEFERRED_DECODE | Batch decode after diffusion (no preview during generation) |
+
+**16GB GPU**: The system automatically offloads generator/text_encoder before VAE decode to fit in memory.
 
 ### RTMP Streaming (Production)
 
