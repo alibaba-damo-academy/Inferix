@@ -1,4 +1,4 @@
-# Inferix
+# Inferix: A Block-Diffusion based Next-Generation Inference Engine for World Simulation
 <!--
 [![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | 
 -->

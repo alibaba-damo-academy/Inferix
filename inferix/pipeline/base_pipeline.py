@@ -343,6 +343,12 @@ class AbstractInferencePipeline(ABC):
         from inferix.core.memory.utils import DynamicSwapInstaller
         
         model.to_empty(device='cpu')
+        
+        # Load checkpoint weights first (before dtype conversion to avoid mismatch)
+        if checkpoint is not None:
+            model.load_state_dict(checkpoint, assign=True)
+        
+        # Convert to bfloat16 after loading weights
         model.to(dtype=torch.bfloat16)
         
         if low_memory:
@@ -826,9 +832,7 @@ class AbstractInferencePipeline(ABC):
             **kwargs
         )
         
-        print(f"[Interactive] Starting session {session.session_id}")
-        print(f"[Interactive] Apply policy: {session.apply_policy.value}")
-        print(f"[Interactive] Total frames: {calculate_total_frames(num_segments, segment_length, overlap_frames)}")
+        print(f"[Interactive] Session {session.session_id}: {num_segments} segments, {calculate_total_frames(num_segments, segment_length, overlap_frames)} frames")
         
         all_videos = []
         initial_latent = None

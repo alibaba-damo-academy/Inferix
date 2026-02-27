@@ -106,15 +106,23 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
         key = 'generator_ema' if use_ema else 'generator'
         
+        # Check if key exists, try fallback
         if key not in state_dict:
             available_keys = list(state_dict.keys())
             print(f"Warning: Key '{key}' not found. Available: {available_keys}")
             fallback_key = 'generator_ema' if key == 'generator' else 'generator'
-            key = fallback_key if fallback_key in state_dict else None
+            if fallback_key in state_dict:
+                key = fallback_key
+                print(f"Using fallback key: '{key}'")
+            else:
+                key = None
+        
+        if key is None:
+            raise ValueError(f"No valid checkpoint key found. Available: {list(state_dict.keys())}")
         
         # Store checkpoint for GPU loading in setup_devices
-        self._checkpoint_state_dict = state_dict[key] if key else state_dict
-        print("✅ Checkpoint loaded to CPU" + (" (mmap mode)" if use_mmap else ""))
+        self._checkpoint_state_dict = state_dict[key]
+        print("✅ Checkpoint loaded to CPU" + f" (key: {key})" + (" (mmap mode)" if use_mmap else ""))
 
     def _get_model_components(self) -> Dict[str, Any]:
         """Return Self-Forcing model components in loading order"""
@@ -687,8 +695,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                             stream_callback(stream_frames)
                     
                     decoded_blocks.append(block_video.cpu())
-                
-                print(f"✅ Block {block_index} decoded and streamed ({block_latent.shape[1]} frames)")
             
             block_callback = block_streaming_callback
         else:
@@ -698,7 +704,6 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                 if rank != 0:
                     return
                 saved_block_latents.append(block_latent.cpu())
-                print(f"✅ Block {block_index} generated ({block_latent.shape[1]} frames)")
             
             block_callback = block_latent_callback
         
@@ -730,24 +735,41 @@ class SelfForcingPipeline(AbstractInferencePipeline):
         
         # For DEFERRED_DECODE mode: now decode all blocks
         if resolved_mode == StreamingMode.DEFERRED_DECODE and rank == 0 and saved_block_latents:
-            # Offload generator to CPU before VAE decode (critical for 16GB GPUs)
-            # This is needed because DEFERRED_DECODE completes all diffusion first,
-            # then decodes, so generator is still on GPU consuming ~8.4GB
-            generator_on_cpu = False
+            # Offload all components except VAE before decode (critical for 16GB GPUs)
+            # Generator: ~8.4GB, TextEncoder: ~1-2GB, VAE decode needs ~7.7GB
+            offloaded_components = []
+            
             if not low_memory:
-                generator_device = next(self.pipeline.generator.parameters()).device
-                if generator_device.type == 'cuda':
-                    print("[Memory] Offloading generator to CPU for VAE decode...")
-                    self.pipeline.generator.to('cpu')
-                    torch.cuda.empty_cache()
-                    generator_on_cpu = True
+                # Offload generator
+                try:
+                    gen_device = next(self.pipeline.generator.parameters()).device
+                    if gen_device.type == 'cuda':
+                        self.pipeline.generator.to('cpu')
+                        offloaded_components.append(('generator', gen_device))
+                except StopIteration:
+                    pass
+                
+                # Offload text_encoder
+                try:
+                    te_device = next(self.pipeline.text_encoder.parameters()).device
+                    if te_device.type == 'cuda':
+                        self.pipeline.text_encoder.to('cpu')
+                        offloaded_components.append(('text_encoder', te_device))
+                except StopIteration:
+                    pass
+                
+                # Aggressive cleanup for 16GB GPUs
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             
             print(f"Decoding {len(saved_block_latents)} blocks with VAE...")
             for block_idx, block_latent in enumerate(saved_block_latents):
                 # Move latent back to GPU for decode
                 block_latent_gpu = block_latent.to(self.device)
                 
-                # Decode this block (with memory manager support)
+                # Decode this block
                 with torch.no_grad(), self._exclusive_component('vae'):
                     block_video = self.pipeline.vae.decode_to_pixel(block_latent_gpu, use_cache=True, chunk_size=1)
                     block_video = (block_video * 0.5 + 0.5).clamp(0, 1)
@@ -765,13 +787,13 @@ class SelfForcingPipeline(AbstractInferencePipeline):
                 del block_latent_gpu
                 torch.cuda.empty_cache()
             
-            print(f"✅ All {len(saved_block_latents)} blocks decoded and streamed")
-            
-            # Restore generator to GPU for next segment
-            if generator_on_cpu:
-                print("[Memory] Restoring generator to GPU...")
-                self.pipeline.generator.to(self.device)
-                torch.cuda.empty_cache()
+            # Restore offloaded components to GPU for next segment
+            for name, device in offloaded_components:
+                if name == 'generator':
+                    self.pipeline.generator.to(self.device)
+                elif name == 'text_encoder':
+                    self.pipeline.text_encoder.to(self.device)
+            torch.cuda.empty_cache()
         
         # Assemble full video
         if decoded_blocks:

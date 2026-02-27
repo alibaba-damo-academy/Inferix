@@ -59,29 +59,20 @@ class GradioStreamingBackend(StreamingBackend):
             # Frame generator for streaming
             def frame_generator():
                 """Generator that yields frames continuously with proper keep-alive"""
-                print("⏳ Gradio generator started, waiting for first frame...")
                 
-                # 1. Block and wait for first frame before refreshing UI
+                # Block and wait for first frame
                 try:
                     first_frame = self.frame_queue.get(block=True)
                     if first_frame is None:
-                        print("🛑 Received stop signal before first frame.")
                         return
                     
                     # Format conversion
                     if first_frame.dtype != np.uint8:
                         first_frame = (np.clip(first_frame, 0, 1) * 255).astype(np.uint8)
                     
-                    # Debug info
-                    print(f"🎬 First frame: shape={first_frame.shape}, dtype={first_frame.dtype}, "
-                          f"min={first_frame.min()}, max={first_frame.max()}")
-                    
                     yield first_frame
                     
-                except Exception as e:
-                    print(f"❌ Error waiting for first frame: {e}")
-                    import traceback
-                    traceback.print_exc()
+                except Exception:
                     return
 
                 last_yielded_frame = first_frame
@@ -89,27 +80,20 @@ class GradioStreamingBackend(StreamingBackend):
 
                 while self.running:
                     try:
-                        # Long timeout to avoid frequent keep-alive triggers
                         frame = self.frame_queue.get(timeout=frame_timeout)
-                        if frame is None:  # Stop signal
-                            print(f"🛑 Gradio stream received stop signal after {frame_count} frames.")
+                        if frame is None:
                             break
                         
-                        # Format conversion
                         if frame.dtype != np.uint8:
                             frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
                         
                         last_yielded_frame = frame
                         frame_count += 1
                         
-                        if frame_count % 10 == 0:
-                            print(f"🎬 Yielded {frame_count} frames")
-                        
                         yield frame
                         
                     except queue.Empty:
-                        # No new frame after timeout, yield last frame for keep-alive
-                        print(f"⏱️  No new frame for {frame_timeout}s, holding last frame...")
+                        # No new frame, yield last frame for keep-alive
                         yield last_yielded_frame
                         time.sleep(1.0/fps)
             
@@ -170,26 +154,19 @@ class GradioStreamingBackend(StreamingBackend):
 
     def stream_batch(self, x: torch.Tensor):
         if not self.running:
-            print("⚠️  Gradio streaming not running, cannot stream")
             return False
 
         x = x.cpu().numpy()
         T = x.shape[0]
-        
-        # Debug: check actual frame data
-        print(f"📤 Streaming {T} frames: dtype={x.dtype}, min={x.min():.4f}, max={x.max():.4f}")
 
         for i in range(T):
             frame = x[i]
-            # Store frame in buffer for looping
             self.video_buffer.append(frame.copy())
             try:
                 self.frame_queue.put(frame, timeout=1.0)
             except queue.Full:
-                print("⚠️  Frame queue full")
                 return False
         
-        print(f"✅ Streamed {T} frames successfully (total buffered: {len(self.video_buffer)})")
         return True
 
     def disconnect(self):
