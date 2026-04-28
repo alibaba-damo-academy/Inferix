@@ -2,7 +2,7 @@
 <!--
 [![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | 
 -->
-[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Data](https://img.shields.io/badge/LVBench-Data-blue)](https://huggingface.co/datasets/heyuanyu/InterVBench) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://arxiv.org/abs/2511.22973) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/) 
+[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Data](https://img.shields.io/badge/InterVBench-Data-blue)](https://huggingface.co/datasets/heyuanyu/InterVBench) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://arxiv.org/abs/2511.22973) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/) 
 
 
 [![Follow us on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/follow-us-on-hf-md.svg)](https://huggingface.co/papers/2511.20714)
@@ -136,7 +136,7 @@ Add your model to the main README and create detailed documentation in your mode
 
 ## Benchmarks
 
-### LVBench
+### InterVBench
 [![Benchmark](https://img.shields.io/badge/Benchmark-blue)](https://huggingface.co/datasets/heyuanyu/InterVBench)
 
 [InterVBench](https://huggingface.co/datasets/heyuanyu/InterVBench) is a curated benchmark of 1,000 minute-long videos targeted at evaluating long-horizon generation. Please refer to [InterVBench](InterVBench/README.md) for more details.
