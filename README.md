@@ -1,16 +1,18 @@
-# Inferix: A Block-Diffusion based Next-Generation Inference Engine for World Simulation
-<!--
-[![Blog](https://img.shields.io/badge/Blog-blue)](blog) | [![GitHub](https://img.shields.io/github/stars/inferix/inferix?style=social)](github) | 
--->
-[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Data](https://img.shields.io/badge/InterVBench-Data-blue)](https://huggingface.co/datasets/heyuanyu/InterVBench) | [![Preprint](https://img.shields.io/badge/arXiv-BlockVid-red)](https://arxiv.org/abs/2511.22973) | [![Static Badge](https://img.shields.io/badge/Website-BlockVid-purple)](https://ziplab.co/BlockVid/) 
+<div align="center">
+<img width="2172" height="724" alt="image" src="https://github.com/user-attachments/assets/1f25b9d3-98ac-4fe8-9225-824e38a67d7c" />
 
+# Inferix: A Block-Diffusion based Next-Generation Inference Engine for World Simulation
+
+[![Preprint](https://img.shields.io/badge/arXiv-Inferix-red)](https://arxiv.org/abs/2511.20714) | [![Data](https://img.shields.io/badge/InterVBench-Data-blue)](https://huggingface.co/datasets/ziplab/InterVBench) | [![Preprint](https://img.shields.io/badge/arXiv-BIFE-red)](https://arxiv.org/abs/2511.22973) | [![Static Badge](https://img.shields.io/badge/Website-BIFE-purple)](https://alibaba-damo-academy.github.io/BIFE)
 
 [![Follow us on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/follow-us-on-hf-md.svg)](https://huggingface.co/papers/2511.20714)
+
+</div>
 
 
 ## 📢 News
 
-- **[2025.11]** [Technical report](https://arxiv.org/abs/2511.20714) and [InterVBench](https://huggingface.co/datasets/heyuanyu/InterVBench) are available!
+- **[2025.11]** [Technical report](https://arxiv.org/abs/2511.20714) and [InterVBench](https://huggingface.co/datasets/ziplab/InterVBench) are available!
 - **[2025.10]** Inferix is released!
 
 ## 🚀 About
